@@ -108,6 +108,8 @@ private:
 // The one and only Jit Object.
 LLILCJit *LLILCJit::TheJit = nullptr;
 
+unsigned long long LLILCJitContext::Count = 0;
+
 // This is guaranteed to be called by the EE
 // in single-threaded mode.
 ICorJitCompiler *__stdcall getJit() {
@@ -336,6 +338,11 @@ CorJitResult LLILCJit::compileMethod(ICorJitInfo *JitInfo,
   // Clean up a bit more
   delete Context.TheABIInfo;
   Context.TheABIInfo = nullptr;
+
+  LLILCJitContext::Count++;
+
+  dbgs() << "Compiled " << LLILCJitContext::Count << "\n";
+  Context.outputDebugMethodName();
 
   return Result;
 }

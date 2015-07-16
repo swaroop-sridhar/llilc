@@ -75,6 +75,9 @@ struct LLILCJitContext {
   void outputSkippingMethodName();
 
 public:
+
+  static unsigned long long Count;
+
   /// \name CoreCLR EE information
   //@{
   ICorJitInfo *JitInfo;            ///< EE callback interface.
