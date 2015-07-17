@@ -197,10 +197,6 @@ void GCInfo::encodeLiveness() {
         GcSlotId SlotID;
         int32_t Offset = Loc.getOffset();
 
-        if ((Offset % TARGET_POINTER_SIZE) != 0) {
-          Offset -= (Offset % TARGET_POINTER_SIZE);
-        }
-
         DenseMap<int32_t, GcSlotId>::const_iterator ExistingSlot =
             SlotMap.find(Offset);
         if (ExistingSlot == SlotMap.end()) {
