@@ -1269,15 +1269,34 @@ private:
 
   llvm::PointerType *getUnmanagedPointerType(llvm::Type *ElementType);
 
-  bool isManagedType(llvm::Type *Type);
+  /// \brief Check whether Type is a managed pointer type.
+  ///
+  /// \param Type Type to check.
+  /// \returns true iff \p Type is a managed pointer type.
   bool isManagedPointerType(llvm::Type *Type);
+
+  /// \brief Check whether Type is a managed aggregate type.
+  ///
+  /// \param Type Type to check.
+  /// \returns true iff \p Type is an aggregate containing 
+  ///          a managed pointer (or another managed aggregate).
   bool isManagedAggregateType(llvm::Type *Type);
+
+  /// \brief Check whether Type is a managed type.
+  ///
+  /// \param Type Type to check.
+  /// \returns true iff \p Type is a managed aggregate or managed pointer.
+  bool isManagedType(llvm::Type *Type);
 
   /// \brief Check whether Type is an unmanaged pointer type.
   ///
   /// \param Type Type to check.
   /// \returns true iff \p Type is an unmanaged pointer type.
   bool isUnmanagedPointerType(llvm::Type *Type);
+
+  llvm::AllocaInst *makeAlloca(llvm::Type *Ty, llvm::Value *ArraySize = nullptr,
+                               const llvm::Twine &Name = "", 
+                               unsigned int Alignment = 0);
 
   llvm::StoreInst *makeStore(llvm::Value *ValueToStore, llvm::Value *Address,
                              bool IsVolatile, bool AddressMayBeNull = true);

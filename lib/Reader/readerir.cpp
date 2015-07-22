@@ -766,8 +766,7 @@ void GenIR::createSym(uint32_t Num, bool IsAuto, CorInfoType CorType,
     }
   }
 
-  AllocaInst *AllocaInst = LLVMBuilder->CreateAlloca(
-      LLVMType, nullptr,
+  AllocaInst *AllocaInst = makeAlloca(LLVMType, nullptr,
       UseNumber ? Twine(SymName) + Twine(Number) : Twine(SymName));
 
   if (IsAuto) {
@@ -879,7 +878,8 @@ Instruction *GenIR::createTemporary(Type *Ty, const Twine &Name) {
     LLVMBuilder->SetInsertPoint(InsertBefore);
   }
 
-  AllocaInst *AllocaInst = LLVMBuilder->CreateAlloca(Ty, nullptr, Name);
+  AllocaInst *AllocaInst = makeAlloca(Ty, nullptr, Name);
+
   // Update the end of the alloca range.
   TempInsertionPoint = AllocaInst;
   LLVMBuilder->restoreIP(IP);
@@ -3837,6 +3837,28 @@ void GenIR::storeIndirectArg(const CallArgType &ValueArgType,
                             Alignment, IsVolatile, &ResolvedToken,
                             IsNotValueClass, IsValueIsPointer, IsFieldToken,
                             IsUnchecked);
+}
+
+// Helper used to wrap CreateAlloca
+AllocaInst *GenIR::makeAlloca(Type *Ty, Value *ArraySize,
+                              const Twine &Name, unsigned int Alignment)
+{
+  AllocaInst *AllocaInst = LLVMBuilder->CreateAlloca(Ty, nullptr, Name);
+
+#if 0
+  if (isManagedType(Ty)) {
+    unsigned int minimumAlignment = TargetPointerSizeInBits / 8;
+    if (Alignment < minimumAlignment) {
+      Alignment = minimumAlignment;
+    }
+  }
+#endif
+
+  if (Alignment != 0) {
+    AllocaInst->setAlignment(Alignment);
+  }
+
+  return AllocaInst;
 }
 
 // Helper used to wrap CreateStore
@@ -6994,8 +7016,7 @@ IRNode *GenIR::localAlloc(IRNode *Arg, bool ZeroInit) {
   const unsigned int Alignment = TargetPointerSizeInBits / 8;
   LLVMContext &Context = *JitContext->LLVMContext;
   Type *Ty = Type::getInt8Ty(Context);
-  AllocaInst *LocAlloc = LLVMBuilder->CreateAlloca(Ty, Arg, "LocAlloc");
-  LocAlloc->setAlignment(Alignment);
+  AllocaInst *LocAlloc = makeAlloca(Ty, Arg, "LocAlloc", Alignment);
 
   // Zero the allocated region if so requested.
   if (ZeroInit) {

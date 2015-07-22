@@ -265,6 +265,7 @@ CorJitResult LLILCJit::compileMethod(ICorJitInfo *JitInfo,
         LLILC_TARGET_TRIPLE, "", "", Options, Reloc::Default,
         CodeModel::JITDefault, OptLevel);
     Context.TM = TM;
+    //TM->Options.PrintMachineCode = true;
 
     // Construct the jitting layers.
     EEMemoryManager MM(&Context);
@@ -341,9 +342,6 @@ CorJitResult LLILCJit::compileMethod(ICorJitInfo *JitInfo,
 
   LLILCJitContext::Count++;
 
-  dbgs() << "Compiled " << LLILCJitContext::Count << "\n";
-  Context.outputDebugMethodName();
-
   return Result;
 }
 
@@ -410,6 +408,7 @@ bool LLILCJit::readMethod(LLILCJitContext *JitContext) {
   std::string FuncName = JitContext->MethodName;
 
   try {
+
     Reader.msilToIR();
   } catch (NotYetImplementedException &Nyi) {
     if (DumpLevel >= ::DumpLevel::SUMMARY) {
