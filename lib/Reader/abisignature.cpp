@@ -158,6 +158,10 @@ CallSite ABICallSignature::emitUnmanagedCall(GenIR &Reader, Value *Target,
                                              bool MayThrow,
                                              ArrayRef<Value *> Arguments,
                                              Value *&Result) const {
+  if (Reader.JitContext->Options->DoInsertStatepoints) {
+    throw NotYetImplementedException("Can't PInvoke yet");
+  }
+
   const LLILCJitContext &JitContext = *Reader.JitContext;
   const struct CORINFO_EE_INFO::InlinedCallFrameInfo &CallFrameInfo =
       JitContext.EEInfo.inlinedCallFrameInfo;
