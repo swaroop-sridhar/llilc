@@ -15,6 +15,7 @@
 
 #include "earlyincludes.h"
 #include "readerir.h"
+#include "GcInfo.h"
 #include "imeta.h"
 #include "newvstate.h"
 #include "llvm/ADT/Triple.h"
@@ -649,7 +650,8 @@ void GenIR::insertIRForUnmanagedCallFrame() {
 
   // Mark this function as requiring a frame pointer and as using GC.
   Function->addFnAttr("no-frame-pointer-elim", "true");
-  Function->setGC("coreclr");
+
+  assert(GCInfo::isGCFunction(*Function));
 
   // The call frame data structure is modeled as an opaque blob of bytes.
   Type *CallFrameTy = ArrayType::get(Int8Ty, CallFrameInfo.size);
@@ -6754,8 +6756,7 @@ void GenIR::classifyCmpType(Type *Ty, uint32_t &Size, bool &IsPointer,
   }
 }
 
-IRNode *GenIR::cmp(ReaderBaseNS::CmpOpcode Opcode, IRNode *Arg1, IRNode *Arg2) {
-
+bool GenIR::prepareArgsForCompare(IRNode *&Arg1, IRNode *&Arg2) {
   // Grab the types to be compared.
   Type *Ty1 = Arg1->getType();
   Type *Ty2 = Arg2->getType();
@@ -6818,6 +6819,13 @@ IRNode *GenIR::cmp(ReaderBaseNS::CmpOpcode Opcode, IRNode *Arg1, IRNode *Arg2) {
   // Types should now match up.
   ASSERT(Arg1->getType() == Arg2->getType());
 
+  return IsFloat1;
+}
+
+IRNode *GenIR::cmp(ReaderBaseNS::CmpOpcode Opcode, IRNode *Arg1, IRNode *Arg2) {
+
+  bool IsFloat = prepareArgsForCompare(Arg1, Arg2);
+
   static const CmpInst::Predicate IntCmpMap[ReaderBaseNS::LastCmpOpcode] = {
       CmpInst::Predicate::ICMP_EQ,  // CEQ,
       CmpInst::Predicate::ICMP_SGT, // CGT,
@@ -6836,7 +6844,7 @@ IRNode *GenIR::cmp(ReaderBaseNS::CmpOpcode Opcode, IRNode *Arg1, IRNode *Arg2) {
 
   Value *Cmp;
 
-  if (IsFloat1) {
+  if (IsFloat) {
     Cmp = LLVMBuilder->CreateFCmp(FloatCmpMap[Opcode], Arg1, Arg2);
   } else {
     Cmp = LLVMBuilder->CreateICmp(IntCmpMap[Opcode], Arg1, Arg2);
@@ -6871,52 +6879,7 @@ void GenIR::boolBranch(ReaderBaseNS::BoolBranchOpcode Opcode, IRNode *Arg1) {
 void GenIR::condBranch(ReaderBaseNS::CondBranchOpcode Opcode, IRNode *Arg1,
                        IRNode *Arg2) {
 
-  // TODO: make this bit of code (which also appears in Cmp)
-  // into a helper routine.
-
-  // Grab the types to be compared.
-  Type *Ty1 = Arg1->getType();
-  Type *Ty2 = Arg2->getType();
-
-  // Types can only be int32, int64, float, double, or pointer.
-  // They must match in bit size.
-  uint32_t Size1 = 0;
-  uint32_t Size2 = 0;
-  bool IsFloat1 = false;
-  bool IsFloat2 = false;
-  bool IsPointer1 = false;
-  bool IsPointer2 = false;
-
-  classifyCmpType(Ty1, Size1, IsPointer1, IsFloat1);
-  classifyCmpType(Ty2, Size2, IsPointer2, IsFloat2);
-
-  ASSERT(Size1 == Size2);
-  ASSERT((Size1 == 32) || (Size1 == 64));
-  ASSERT(IsFloat1 == IsFloat2);
-
-  // Make types agree without perturbing bit patterns.
-  if (Ty1 != Ty2) {
-    // Must be ptr-ptr or int-ptr case.
-    ASSERT(IsPointer1 || IsPointer2);
-
-    // For the ptr-ptr case we pointer cast arg2 to match arg1.
-    // For the ptr-int cases we cast the pointer to int.
-    if (IsPointer1) {
-      if (IsPointer2) {
-        // PointerCast Arg2 to match Arg1
-        Arg2 = (IRNode *)LLVMBuilder->CreatePointerCast(Arg2, Ty1);
-      } else {
-        // Cast ptr Arg1 to match int Arg2
-        Arg1 = (IRNode *)LLVMBuilder->CreatePointerCast(Arg1, Ty2);
-      }
-    } else {
-      // Cast ptr Arg2 to match int Arg1
-      Arg2 = (IRNode *)LLVMBuilder->CreatePointerCast(Arg2, Ty1);
-    }
-  }
-
-  // Types should now match up.
-  ASSERT(Arg1->getType() == Arg2->getType());
+  bool IsFloat = prepareArgsForCompare(Arg1, Arg2);
 
   static const CmpInst::Predicate
       IntBranchMap[ReaderBaseNS::LastCondBranchOpcode] = {
@@ -6967,8 +6930,8 @@ void GenIR::condBranch(ReaderBaseNS::CondBranchOpcode Opcode, IRNode *Arg1,
       };
 
   Value *Condition =
-      IsFloat1 ? LLVMBuilder->CreateFCmp(FloatBranchMap[Opcode], Arg1, Arg2)
-               : LLVMBuilder->CreateICmp(IntBranchMap[Opcode], Arg1, Arg2);
+      IsFloat ? LLVMBuilder->CreateFCmp(FloatBranchMap[Opcode], Arg1, Arg2)
+              : LLVMBuilder->CreateICmp(IntBranchMap[Opcode], Arg1, Arg2);
 
   // Patch up the branch instruction
   TerminatorInst *TermInst = LLVMBuilder->GetInsertBlock()->getTerminator();
