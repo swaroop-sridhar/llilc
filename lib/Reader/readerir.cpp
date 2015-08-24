@@ -348,6 +348,21 @@ void GenIR::readerPrePass(uint8_t *Buffer, uint32_t NumBytes) {
   DoneBuildingFlowGraph = false;
   UnreachableContinuationBlock = nullptr;
 
+  // Setup function for emiting debug locations
+  DIFile *Unit = DBuilder->createFile(LLILCDebugInfo.TheCU->getFilename(),
+                                      LLILCDebugInfo.TheCU->getDirectory());
+  bool IsOptimized = (JitContext->Flags & CORJIT_FLG_DEBUG_CODE) == 0;
+  DIScope *FContext = Unit;
+  unsigned LineNo = 0;
+  unsigned ScopeLine = ICorDebugInfo::PROLOG;
+  bool IsDefinition = true;
+  DISubprogram *SP = DBuilder->createFunction(
+      FContext, Function->getName(), StringRef(), Unit, LineNo,
+      createFunctionType(Function, Unit), Function->hasInternalLinkage(),
+      IsDefinition, ScopeLine, DINode::FlagPrototyped, IsOptimized, Function);
+
+  LLILCDebugInfo.FunctionScope = SP;
+
   initParamsAndAutos(MethodSignature);
 
   // Add storage for the indirect result, if any.
@@ -448,21 +463,6 @@ void GenIR::readerPrePass(uint8_t *Buffer, uint32_t NumBytes) {
           MayThrow, Void, JustMyCodeFlag, Zero, CallReturns, "JustMyCodeHook");
     }
   }
-
-  // Setup function for emiting debug locations
-  DIFile *Unit = DBuilder->createFile(LLILCDebugInfo.TheCU->getFilename(),
-                                      LLILCDebugInfo.TheCU->getDirectory());
-  bool IsOptimized = (JitContext->Flags & CORJIT_FLG_DEBUG_CODE) == 0;
-  DIScope *FContext = Unit;
-  unsigned LineNo = 0;
-  unsigned ScopeLine = ICorDebugInfo::PROLOG;
-  bool IsDefinition = true;
-  DISubprogram *SP = DBuilder->createFunction(
-      FContext, Function->getName(), StringRef(), Unit, LineNo,
-      createFunctionType(Function, Unit), Function->hasInternalLinkage(),
-      IsDefinition, ScopeLine, DINode::FlagPrototyped, IsOptimized, Function);
-
-  LLILCDebugInfo.FunctionScope = SP;
 
   // TODO: Insert class initialization check if necessary
   CorInfoInitClassResult InitResult =
@@ -581,6 +581,11 @@ void GenIR::insertIRToKeepGenericContextAlive() {
 
   // TODO: we must convey the offset of this local to the runtime
   // via the GC encoding.
+  // https://github.com/dotnet/llilc/issues/766
+
+  if (JitContext->Options->DoInsertStatepoints) {
+    throw NotYetImplementedException("NYI: Generic Context reporting");
+  }
 }
 
 void GenIR::insertIRForSecurityObject() {
@@ -617,6 +622,11 @@ void GenIR::insertIRForSecurityObject() {
 
   // TODO: we must convey the offset of the security object to the runtime
   // via the GC encoding.
+  // https://github.com/dotnet/llilc/issues/767
+
+  if (JitContext->Options->DoInsertStatepoints) {
+    throw NotYetImplementedException("NYI: Security Object Reporting");
+  }
 }
 
 void GenIR::callMonitorHelper(bool IsEnter) {
@@ -792,10 +802,35 @@ void GenIR::createSym(uint32_t Num, bool IsAuto, CorInfoType CorType,
       LLVMType, nullptr,
       UseNumber ? Twine(SymName) + Twine(Number) : Twine(SymName));
 
+  DIFile *Unit = DBuilder->createFile(LLILCDebugInfo.TheCU->getFilename(),
+                                      LLILCDebugInfo.TheCU->getDirectory());
+
+  DIType *DebugType = convertType(LLVMType);
+  bool AlwaysPreserve = false;
+  unsigned Flags = 0;
+
+  std::string Name =
+      (UseNumber ? Twine(SymName) + Twine(Number) : Twine(SymName)).str();
+
   if (IsAuto) {
+    auto *DebugVar =
+        DBuilder->createAutoVariable(LLILCDebugInfo.FunctionScope, Name, Unit,
+                                     0, DebugType, AlwaysPreserve, Flags);
+    auto DL = llvm::DebugLoc::get(0, 0, LLILCDebugInfo.FunctionScope);
+    DBuilder->insertDeclare(AllocaInst, DebugVar, DBuilder->createExpression(),
+                            DL, LLVMBuilder->GetInsertBlock());
+
     LocalVars[Num] = AllocaInst;
     LocalVarCorTypes[Num] = CorType;
   } else {
+    unsigned ArgNo = Num + 1;
+
+    auto *DebugVar = DBuilder->createParameterVariable(
+        LLILCDebugInfo.FunctionScope, Name, ArgNo, Unit, 0, DebugType,
+        AlwaysPreserve, Flags);
+    auto DL = llvm::DebugLoc::get(0, 0, LLILCDebugInfo.FunctionScope);
+    DBuilder->insertDeclare(AllocaInst, DebugVar, DBuilder->createExpression(),
+                            DL, LLVMBuilder->GetInsertBlock());
     Arguments[Num] = AllocaInst;
   }
 }
@@ -1091,9 +1126,38 @@ llvm::DIType *GenIR::convertType(Type *Ty) {
 
     return DbgTy;
   }
-  // TODO: add support for aggregate types
-  // Types we are missing: LabelTy, MetadataTy, X86_MMXTy, FunctionTy, StructTy
-  // ArrayTy, VectoryTy
+
+  // TODO: These are currently empty types to prevent LLVM from accessing a
+  // nullptr. Since we do not care about the types for debugging with the CLR,
+  // this is sufficient, however, eventually we may want to actually fill these
+  // out
+
+  if (Ty->isStructTy()) {
+    DIFile *Unit = DBuilder->createFile(LLILCDebugInfo.TheCU->getFilename(),
+                                        LLILCDebugInfo.TheCU->getDirectory());
+    llvm::DIType *DbgTy =
+        DBuilder->createStructType(LLILCDebugInfo.TheCU, "csharp_object", Unit,
+                                   0, 0, 0, 0, nullptr, llvm::DINodeArray());
+
+    return DbgTy;
+  }
+
+  if (Ty->isArrayTy()) {
+    llvm::DIType *DbgTy = DBuilder->createArrayType(
+        0, 0, convertType(Ty->getArrayElementType()), llvm::DINodeArray());
+
+    return DbgTy;
+  }
+
+  if (Ty->isVectorTy()) {
+    llvm::DIType *DbgTy = DBuilder->createVectorType(
+        0, 0, convertType(Ty->getVectorElementType()), llvm::DINodeArray());
+
+    return DbgTy;
+  }
+
+  // LabelTy and MetadataTy do not correspond to a DIType.
+  // Need to implement X86_MMX and Function types here
   return nullptr;
 }
 
@@ -2697,6 +2761,7 @@ FlowGraphNode *GenIR::fgSplitBlock(FlowGraphNode *Block, IRNode *Node) {
       BranchInst::Create(NewBlock, TheBasicBlock);
     }
   } else {
+    assert(TheBasicBlock != nullptr);
     if (TheBasicBlock->getTerminator() != nullptr) {
       NewBlock = TheBasicBlock->splitBasicBlock(Inst);
     } else {
@@ -7310,7 +7375,12 @@ void GenIR::maintainOperandStack(FlowGraphNode *CurrentBlock) {
         CreatePHIs = true;
       }
 
-      Instruction *CurrentInst = SuccessorBlock->begin();
+      // We need to be very careful about reasoning about or iterating through
+      // instructions in empty blocks or blocks with no terminators.
+      Instruction *TermInst = SuccessorBlock->getTerminator();
+      const bool SuccessorDegenerate = (TermInst == nullptr);
+      Instruction *CurrentInst =
+          SuccessorBlock->empty() ? nullptr : SuccessorBlock->begin();
       PHINode *Phi = nullptr;
       for (IRNode *Current : *ReaderOperandStack) {
         Value *CurrentValue = (Value *)Current;
@@ -7335,7 +7405,9 @@ void GenIR::maintainOperandStack(FlowGraphNode *CurrentBlock) {
                 fgEdgeListGetNextPredecessorActual(PredecessorList);
           }
         } else {
-          // PHI instructions should have been inserted already
+          // PHI instructions should have been inserted already.
+          assert(CurrentInst != nullptr);
+          assert(isa<PHINode>(CurrentInst));
           Phi = cast<PHINode>(CurrentInst);
           CurrentInst = CurrentInst->getNextNode();
         }
@@ -7346,8 +7418,12 @@ void GenIR::maintainOperandStack(FlowGraphNode *CurrentBlock) {
       }
 
       // The number of PHI instructions should match the number of values on the
-      // stack.
-      ASSERT(CreatePHIs || !isa<PHINode>(CurrentInst));
+      // stack, so if we're not creating PHIs, try and verify that the next
+      // instruction is not a PHI.
+      //
+      // Note when SuccessorBlock is degenerate we can't be sure CurrentInst is
+      // valid, so we can't do this check.
+      assert(CreatePHIs || SuccessorDegenerate || !isa<PHINode>(CurrentInst));
     }
     SuccessorList = fgEdgeListGetNextSuccessorActual(SuccessorList);
   }
