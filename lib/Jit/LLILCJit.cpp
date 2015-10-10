@@ -313,6 +313,10 @@ CorJitResult LLILCJit::compileMethod(ICorJitInfo *JitInfo,
     orc::EEObjectLinkingLayer<decltype(Listener)> Loader(Listener);
     orc::IRCompileLayer<decltype(Loader)> Compiler(Loader,
                                                    orc::LLILCCompiler(*TM));
+    // Allocate GcInfo if necessary
+    if (Context.Options->DoInsertStatepoints) {
+      Context.GcInfo = new GcInfo();
+    }
 
     // Now jit the method.
     if (Context.Options->DumpLevel == DumpLevel::VERBOSE) {
@@ -380,9 +384,9 @@ CorJitResult LLILCJit::compileMethod(ICorJitInfo *JitInfo,
 
       assert(*NativeEntry >= MM.getHotCodeBlock());
       GcInfoAllocator GcInfoAllocator;
-      GCInfo GcInfo(&Context, MM.getStackMapSection(), &GcInfoAllocator,
-                    *NativeEntry - MM.getHotCodeBlock());
-      GcInfo.emitGCInfo();
+      GcInfoEmitter GcInfoEmitter(&Context, MM.getStackMapSection(), &GcInfoAllocator,
+                                  *NativeEntry - MM.getHotCodeBlock());
+      GcInfoEmitter.emitGCInfo();
 
       // Dump out any enabled timing info.
       TimerGroup::printAll(errs());

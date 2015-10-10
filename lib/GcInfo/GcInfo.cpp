@@ -19,12 +19,13 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallBitVector.h"
 #include "llvm/Object/StackMapParser.h"
+#include "llvm/CodeGen/MachineFrameInfo.h"
 #include <sstream>
 
 using namespace llvm;
 
-GCInfo::GCInfo(LLILCJitContext *JitCtx, uint8_t *StackMapData,
-               GcInfoAllocator *Allocator, size_t OffsetCor)
+GcInfoEmitter::GcInfoEmitter(LLILCJitContext *JitCtx, uint8_t *StackMapData,
+                             GcInfoAllocator *Allocator, size_t OffsetCor)
     : JitContext(JitCtx), LLVMStackMapData(StackMapData),
       Encoder(JitContext->JitInfo, JitContext->MethodInfo, Allocator),
       OffsetCorrection(OffsetCor) {
@@ -37,7 +38,7 @@ GCInfo::GCInfo(LLILCJitContext *JitCtx, uint8_t *StackMapData,
 #endif // defined(PARTIALLY_INTERRUPTIBLE_GC_SUPPORTED)
 }
 
-void GCInfo::encodeHeader(const Function &F) {
+void GcInfoEmitter::encodeHeader(const Function &F) {
 #if !defined(NDEBUG)
   if (EmitLogs) {
     dbgs() << "GcTable for Function: " << F.getName() << "\n";
@@ -83,7 +84,7 @@ void GCInfo::encodeHeader(const Function &F) {
 #endif // defined(FIXED_STACK_PARAMETER_SCRATCH_AREA)
 }
 
-void GCInfo::encodeLiveness(const Function &F) {
+void GcInfoEmitter::encodeLiveness(const Function &F) {
   if (LLVMStackMapData == nullptr) {
     return;
   }
@@ -318,25 +319,25 @@ void GCInfo::encodeLiveness(const Function &F) {
 #endif // defined(PARTIALLY_INTERRUPTIBLE_GC_SUPPORTED)
 }
 
-void GCInfo::emitEncoding() {
+void GcInfoEmitter::emitEncoding() {
   Encoder.Build();
   Encoder.Emit();
 }
 
-GCInfo::~GCInfo() {
+GcInfoEmitter::~GcInfoEmitter() {
 #if defined(PARTIALLY_INTERRUPTIBLE_GC_SUPPORTED)
   delete CallSites;
   delete CallSiteSizes;
 #endif // defined(PARTIALLY_INTERRUPTIBLE_GC_SUPPORTED)
 }
 
-void GCInfo::emitGCInfo(const Function &F) {
+void GcInfoEmitter::emitGCInfo(const Function &F) {
   encodeHeader(F);
   encodeLiveness(F);
   emitEncoding();
 }
 
-void GCInfo::emitGCInfo() {
+void GcInfoEmitter::emitGCInfo() {
   const Module::FunctionListType &FunctionList =
       JitContext->CurrentModule->getFunctionList();
   Module::const_iterator Iterator = FunctionList.begin();
@@ -350,20 +351,134 @@ void GCInfo::emitGCInfo() {
   }
 }
 
-bool GCInfo::shouldEmitGCInfo(const Function &F) {
-  return !F.isDeclaration() && isGCFunction(F);
+bool GcInfoEmitter::shouldEmitGCInfo(const Function &F) {
+  return !F.isDeclaration() && GcInfo::isGcFunction(&F);
 }
 
-bool GCInfo::isGCFunction(const llvm::Function &F) {
-  if (!F.hasGC()) {
+bool GcInfoEmitter::isStackBaseFramePointer(const llvm::Function &F) {
+  Attribute Attribute = F.getFnAttribute("no-frame-pointer-elim");
+  return (Attribute.getValueAsString() == "true");
+}
+
+char GcInfoRecorder::ID = 0;
+GcInfoRecorder::GcInfoRecorder() : MachineFunctionPass(ID) {
+}
+
+bool GcInfoRecorder::runOnMachineFunction(MachineFunction &MF) {
+  if (!GcInfo::isGcFunction(MF.getFunction())) {
+    return false;
+  }
+
+  dbgs() << "GcInfoRecorder: " << MF.getFunction()->getName() << "\n";
+
+  const MachineFrameInfo *MFI = MF.getFrameInfo();
+  int ObjectIndexBegin = MFI->getObjectIndexBegin();
+  int ObjectIndexEnd = MFI->getObjectIndexEnd();
+  //const DataLayout &DataLayout = MF.getDataLayout();
+  
+  GcInfo *GcInfo = LLILCJit::TheJit->getLLILCJitContext()->GcInfo;
+  llvm::ValueMap<const llvm::AllocaInst *, uint32_t> *GcAggregates = 
+    GcInfo->GcAggregates;
+  llvm::ValueMap<const llvm::AllocaInst *, uint32_t> *PinnedSlots = 
+    GcInfo->PinnedSlots;
+  uint64_t SpOffset = MFI->getStackSize();
+
+  for (int i = ObjectIndexBegin; i < ObjectIndexEnd; i++) {
+    const AllocaInst * Alloca = MFI->getObjectAllocation(i);
+    if (Alloca == nullptr) {
+      continue;
+    }
+
+    if (PinnedSlots->find(Alloca) != PinnedSlots->end()) {
+      (*PinnedSlots)[Alloca] = SpOffset + MFI->getObjectOffset(i);
+    }
+
+    Type *AllocatedType = Alloca->getAllocatedType();
+    //StructType *StructType = dyn_cast<StructType>(AllocatedType);
+    //const StructLayout *StructLayout = DataLayout.getStructLayout(StructType);
+
+    if (GcInfo::isGcAggregate(AllocatedType)) {
+      if (isa<VectorType>(AllocatedType)) {
+        // Vectors are handled by RewriteStatepointsForGC phase.
+        continue;
+      }
+
+      assert(isa<StructType>(AllocatedType) && "Unexpected GcAggregate");
+      assert(GcAggregates->find(Alloca) != GcAggregates->end());
+
+      (*GcAggregates)[Alloca] = SpOffset + MFI->getObjectOffset(i);
+      
+      dbgs() << "Found GC Aggregate at offset "
+        << (*GcAggregates)[Alloca] << "\n";
+    }
+  }
+
+  return false; // success
+}
+
+bool GcInfo::isGcPointer(const Type *Type) {
+  const PointerType *PtrType = dyn_cast<llvm::PointerType>(Type);
+  if (PtrType != nullptr) {
+    return PtrType->getAddressSpace() == GcInfo::ManagedAddressSpace;
+  }
+
+  return false;
+}
+
+bool GcInfo::isGcAggregate(const Type *AggType) {
+  const VectorType *VecType = dyn_cast<VectorType>(AggType);
+  if (VecType != nullptr) {
+    return isGcPointer(VecType->getScalarType());
+  }
+
+  const ArrayType *ArrType = dyn_cast<ArrayType>(AggType);
+  if (ArrType != nullptr) {
+    return isGcPointer(ArrType->getElementType());
+  }
+
+  const StructType *StType = dyn_cast<StructType>(AggType);
+  if (StType != nullptr) {
+    for (Type *SubType : StType->subtypes()) {
+      if (isGcType(SubType)) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+bool GcInfo::isGcFunction(const llvm::Function *F) {
+  if (!F->hasGC()) {
     return false;
   }
 
   const StringRef CoreCLRName("coreclr");
-  return (CoreCLRName == F.getGC());
+  return (CoreCLRName == F->getGC());
 }
 
-bool GCInfo::isStackBaseFramePointer(const llvm::Function &F) {
-  Attribute Attribute = F.getFnAttribute("no-frame-pointer-elim");
-  return (Attribute.getValueAsString() == "true");
+GcInfo::GcInfo() : PinnedSlots(nullptr), GcAggregates(nullptr) {
+}
+
+GcInfo::~GcInfo() {
+  delete PinnedSlots;
+  delete GcAggregates;
+}
+
+void GcInfo::recordPinnedSlot(AllocaInst* Alloca) {
+  if (PinnedSlots == nullptr) {
+    PinnedSlots = new llvm::ValueMap<const llvm::AllocaInst *, uint32_t>;
+  }
+
+  assert(PinnedSlots->find(Alloca) == PinnedSlots->end());
+  (*PinnedSlots)[Alloca] = 0;
+}
+
+void GcInfo::recordGcAggregate(AllocaInst* Alloca) {
+  if (GcAggregates == nullptr) {
+    GcAggregates = new llvm::ValueMap<const llvm::AllocaInst *, uint32_t>;
+  }
+
+  assert(GcAggregates->find(Alloca) == GcAggregates->end());
+  (*GcAggregates)[Alloca] = 0;
 }

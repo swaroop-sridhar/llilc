@@ -19,13 +19,47 @@
 #include "gcinfoencoder.h"
 #include "jitpch.h"
 #include "LLILCJit.h"
+#include "llvm/IR/ValueMap.h"
+#include "llvm/CodeGen/MachineFunction.h"
+#include "llvm/CodeGen/MachineFunctionPass.h"
 
 class GcInfoAllocator;
 class GcInfoEncoder;
 
+class GcInfo {
+public:
+  static const uint32_t UnmanagedAddressSpace = 0;
+  static const uint32_t ManagedAddressSpace = 1;
+
+  static bool isGcPointer(const llvm::Type *Type);
+  static bool isGcAggregate(const llvm::Type *Type);
+  static bool isGcType(const llvm::Type *Type) {
+    return isGcPointer(Type) || isGcAggregate(Type);
+  }
+  static bool isUnmanagedPointer(const llvm::Type *Type) {
+    return Type->isPointerTy() && !isGcPointer(Type);
+  }
+  static bool isGcFunction(const llvm::Function *F);
+
+  GcInfo();
+  ~GcInfo();
+
+  void recordPinnedSlot(llvm::AllocaInst* Alloca);
+  void recordGcAggregate(llvm::AllocaInst* Alloca);
+
+  llvm::ValueMap<const llvm::AllocaInst *, uint32_t> *PinnedSlots;
+  llvm::ValueMap<const llvm::AllocaInst *, uint32_t> *GcAggregates;
+  llvm::AllocaInst *GSCookie;
+  uint32_t GSCookieOffset;
+  llvm::AllocaInst *SecurityObject;
+  uint32_t SecurityObjectOffset;
+  llvm::AllocaInst *GenericsContext;
+  uint32_t GenericsContextOffset;
+};
+
 /// \brief This is the translator from LLVM's GC StackMaps
 ///  to CoreCLR's GcInfo encoding.
-class GCInfo {
+class GcInfoEmitter {
 public:
   /// Construct a GCInfo object
   /// \param JitCtx Context record for the method's jit request.
@@ -33,16 +67,14 @@ public:
   ///        loaded in memory
   /// \param Allocator The allocator to be used by GcInfo encoder
   /// \param OffsetCorrection FunctionStart - CodeBlockStart difference
-  GCInfo(LLILCJitContext *JitCtx, uint8_t *StackMapData,
+  GcInfoEmitter(LLILCJitContext *JitCtx, uint8_t *StackMapData,
          GcInfoAllocator *Allocator, size_t OffsetCorrection);
 
   /// Emit GC Info to the EE using GcInfoEncoder.
   void emitGCInfo();
 
-  static bool isGCFunction(const llvm::Function &F);
-
   /// Destructor -- delete allocated memory
-  ~GCInfo();
+  ~GcInfoEmitter();
 
 private:
   void emitGCInfo(const llvm::Function &F);
@@ -78,5 +110,16 @@ private:
   BYTE *CallSiteSizes;
 #endif // defined(PARTIALLY_INTERRUPTIBLE_GC_SUPPORTED)
 };
+
+
+class GcInfoRecorder : public llvm::MachineFunctionPass {
+public:
+  explicit GcInfoRecorder();
+  bool runOnMachineFunction(llvm::MachineFunction &MF) override;
+
+private:
+  static char ID;
+};
+
 
 #endif // GCINFO_H

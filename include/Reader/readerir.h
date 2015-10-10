@@ -780,6 +780,9 @@ public:
 
   IRNode *genNullCheck(IRNode *Node) override;
 
+  llvm::AllocaInst *createAlloca(llvm::Type *T, llvm::Value *ArraySize = nullptr, 
+                                 const llvm::Twine &Name = "");
+
   void
   createSym(uint32_t Num, bool IsAuto, CorInfoType CorType,
             CORINFO_CLASS_HANDLE Class, bool IsPinned,
@@ -1288,16 +1291,6 @@ private:
 
   llvm::PointerType *getUnmanagedPointerType(llvm::Type *ElementType);
 
-  bool isManagedType(llvm::Type *Type);
-  bool isManagedPointerType(llvm::Type *Type);
-  bool isManagedAggregateType(llvm::Type *Type);
-
-  /// \brief Check whether Type is an unmanaged pointer type.
-  ///
-  /// \param Type Type to check.
-  /// \returns true iff \p Type is an unmanaged pointer type.
-  bool isUnmanagedPointerType(llvm::Type *Type);
-
   llvm::StoreInst *makeStore(llvm::Value *ValueToStore, llvm::Value *Address,
                              bool IsVolatile, bool AddressMayBeNull = true);
   llvm::StoreInst *makeStoreNonNull(llvm::Value *ValueToStore,
@@ -1780,8 +1773,6 @@ private:
                             ///< entered. It is set and checked by monitor
                             ///< helpers.
   uint32_t TargetPointerSizeInBits;
-  const uint32_t UnmanagedAddressSpace = 0;
-  const uint32_t ManagedAddressSpace = 1;
   llvm::Type *BuiltinObjectType; ///< Cached LLVM representation of object.
 
   /// \brief Map from Element types to the LLVM representation of the
