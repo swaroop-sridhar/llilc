@@ -55,7 +55,6 @@
 #define DW_R14 14
 #define DW_R15 15
 
-#define DW_FRAME_POINTER DW_RBP
 #define DW_STACK_POINTER DW_RSP
 
 #elif defined(_TARGET_ARM64_)

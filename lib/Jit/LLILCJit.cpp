@@ -313,10 +313,6 @@ CorJitResult LLILCJit::compileMethod(ICorJitInfo *JitInfo,
     orc::EEObjectLinkingLayer<decltype(Listener)> Loader(Listener);
     orc::IRCompileLayer<decltype(Loader)> Compiler(Loader,
                                                    orc::LLILCCompiler(*TM));
-    // Allocate GcInfo if necessary
-    if (Context.Options->DoInsertStatepoints) {
-      Context.GcInfo = new GcInfo();
-    }
 
     // Now jit the method.
     if (Context.Options->DumpLevel == DumpLevel::VERBOSE) {
@@ -351,12 +347,6 @@ CorJitResult LLILCJit::compileMethod(ICorJitInfo *JitInfo,
         // and lowering passes before generating code.
         legacy::PassManager Passes;
         Passes.add(createPlaceSafepointsPass());
-
-        PassManagerBuilder PMBuilder;
-        PMBuilder.OptLevel = 0;  // Set optimization level to -O0
-        PMBuilder.SizeLevel = 0; // so that no additional phases are run.
-        PMBuilder.populateModulePassManager(Passes);
-
         Passes.add(createRewriteStatepointsForGCPass());
         Passes.run(*M);
       }

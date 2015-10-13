@@ -16,7 +16,6 @@
 #include "earlyincludes.h"
 #include "GcInfo.h"
 #include "Target.h"
-#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallBitVector.h"
 #include "llvm/Object/StackMapParser.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
@@ -26,6 +25,7 @@ using namespace llvm;
 
 GcInfoEmitter::GcInfoEmitter(LLILCJitContext *JitCtx, uint8_t *StackMapData,
                              GcInfoAllocator *Allocator, size_t OffsetCor)
+
     : JitContext(JitCtx), LLVMStackMapData(StackMapData),
       Encoder(JitContext->JitInfo, JitContext->MethodInfo, Allocator),
       OffsetCorrection(OffsetCor) {
@@ -140,14 +140,19 @@ void GcInfoEmitter::encodeLiveness(const Function &F) {
 
   const uint8_t CallSiteSize = 2;
 
-  DenseMap<int32_t, GcSlotId> SlotMap;
-  size_t NumSlots = 0;
+  // Pinned locations must be allocated before tracked ones, so 
+  // that the slots are correctly marked as Pinned and Untracked.
+  // Since Pinned pointers are rare, we let go of the first few 
+  // bits in the LiveSet, instead of complicating the logic in 
+  // this method with offset calculations.
+
+  const uint32_t NumPinnedSlots = SlotMap.size();
 
   // LLVM StackMap records all live-pointers per Safepoint, whereas
   // CoreCLR's GCTables record pointer birth/deaths per Safepoint.
   // So, we do the translation using old/new live-pointer-sets
   // using bit-sets for recording the liveness -- one bit per slot.
-
+  
   size_t LiveBitSetSize = 25;
   SmallBitVector OldLiveSet(LiveBitSetSize);
   SmallBitVector NewLiveSet(LiveBitSetSize);
@@ -193,10 +198,6 @@ void GcInfoEmitter::encodeLiveness(const Function &F) {
     }
 #endif // !NDEBUG
 
-    // We don't generate GC_CALLER_SP_REL locatons, just
-    // using this as a default value other than SP/FP REL.
-    GcStackSlotBase SpBase = GC_CALLER_SP_REL;
-
     for (const auto &Loc : R.locations()) {
 
       switch (Loc.getKind()) {
@@ -213,29 +214,27 @@ void GcInfoEmitter::encodeLiveness(const Function &F) {
 
       case StackMapParserType::LocationKind::Direct: {
         uint16_t DwReg = Loc.getDwarfRegNum();
-        switch (DwReg) {
-        case DW_FRAME_POINTER:
-          assert(SpBase != GC_SP_REL && "Mixed SP/FP based Locations");
-          SpBase = GC_FRAMEREG_REL;
-          break;
-        case DW_STACK_POINTER:
-          assert(SpBase != GC_FRAMEREG_REL && "Mixed SP/FP based Locations");
-          SpBase = GC_SP_REL;
-          break;
-        default:
-          assert(false && "Unexpected stack base-pointer");
-        }
+
+        // __LLVM_Stackmap reports the liveness of pointers wrt SP even for
+        // methods which have a FP. If this changes, we need to change 
+        // SlotMap from {Offset -> SlotID} mapping
+        //         to {(base, offset) -> SlotID) mapping.
+        //
+        // All pinned/untracked pointers are already reported wrt SP base.
+
+        assert(DwReg == DW_STACK_POINTER &&
+          "Expect Stack Pointer to be the base");
 
         GcSlotId SlotID;
         int32_t Offset = Loc.getOffset();
         DenseMap<int32_t, GcSlotId>::const_iterator ExistingSlot =
             SlotMap.find(Offset);
         if (ExistingSlot == SlotMap.end()) {
-          SlotID = Encoder.GetStackSlotId(Offset, SlotFlags, SpBase);
+          SlotID = Encoder.GetStackSlotId(Offset, SlotFlags, GC_SP_REL);
           SlotMap[Offset] = SlotID;
 
-          assert(SlotID == NumSlots && "SlotIDs dis-contiguous");
-          NumSlots++;
+          size_t NumSlots = SlotMap.size();
+          assert(SlotID == (NumSlots - 1) && "SlotIDs dis-contiguous");
 
           if (NumSlots > LiveBitSetSize) {
             LiveBitSetSize += LiveBitSetSize;
@@ -250,15 +249,16 @@ void GcInfoEmitter::encodeLiveness(const Function &F) {
 #if !defined(NDEBUG)
           if (EmitLogs) {
             SlotStream << "    [" << SlotID
-                       << "]: " << ((SpBase == GC_SP_REL) ? "sp+" : "fp+")
-                       << Offset << "\n";
+                       << "]: " << "sp+" << Offset << "\n";
           }
 #endif // !NDEBUG
         } else {
           SlotID = ExistingSlot->second;
         }
 
-        NewLiveSet[SlotID] = true;
+        if (SlotID >= NumPinnedSlots) {
+          NewLiveSet[SlotID] = true;
+        }
         break;
       }
 
@@ -268,12 +268,7 @@ void GcInfoEmitter::encodeLiveness(const Function &F) {
       }
     }
 
-    // __LLVM_Stackmap reports the liveness of pointers wrt SP even for
-    // certain methods which have a FP. So, we cannot
-    // assert((SpBase == GC_FRAMEREG_REL) ?
-    //          isStackBaseFramePointer(F) : !isStackBaseFramePointer(F));
-
-    for (GcSlotId SlotID = 0; SlotID < NumSlots; SlotID++) {
+    for (GcSlotId SlotID = 0; SlotID < SlotMap.size(); SlotID++) {
       if (!OldLiveSet[SlotID] && NewLiveSet[SlotID]) {
 #if !defined(NDEBUG)
         if (EmitLogs) {
@@ -309,7 +304,89 @@ void GcInfoEmitter::encodeLiveness(const Function &F) {
     dbgs() << "  Safepoints:\n" << LiveStream.str() << "\n";
   }
 #endif // !NDEBUG
+}
 
+void GcInfoEmitter::encodePinned(const Function &F, 
+                                const GcInfo &GcInfo) {
+
+  const GcSlotFlags SlotFlags = 
+    (GcSlotFlags) (GC_SLOT_BASE | GC_SLOT_PINNED | GC_SLOT_UNTRACKED);
+
+#if !defined(NDEBUG)
+  if (EmitLogs) {
+    dbgs() << "  Pinned Slots:\n";
+  }
+#endif // !NDEBUG
+
+  for (auto Pin : GcInfo.PinnedSlots) {
+    int32_t Offset = Pin.second;
+    assert(Offset != GcInfo::InvalidPointerOffset && "Pinned Slot Not Found!");
+
+    assert(SlotMap.find(Offset) == SlotMap.end() && "Pinned slot already allocated");
+    GcSlotId SlotID = 
+      Encoder.GetStackSlotId(Offset, SlotFlags, GC_SP_REL);
+    SlotMap[Offset] = SlotID;
+
+#if !defined(NDEBUG)
+    if (EmitLogs) {
+      dbgs() << "    [" << SlotID
+        << "]: " << "sp+" << Offset << "\n";
+    }
+#endif // !NDEBUG
+  }
+}
+
+void GcInfoEmitter::encodeGcAggregates(const Function &F, 
+                                       const GcInfo &GcInfo) {
+#if !defined(NDEBUG)
+  if (EmitLogs) {
+    dbgs() << "  Untracked Slots:\n";
+  }
+#endif // !NDEBUG
+
+  const GcSlotFlags SlotFlags =
+    (GcSlotFlags) (GC_SLOT_BASE | GC_SLOT_UNTRACKED);
+
+  for (auto Aggregate : GcInfo.GcAggregates) {
+    const AllocaInst *Alloca = Aggregate.first;
+    Type* Type = Alloca->getAllocatedType();
+    assert(isa<StructType>(Type) && "GcAggregate is not a struct");
+    StructType *StructTy = cast<StructType>(Type);
+
+    int32_t AggregateOffset = Aggregate.second;
+    assert(AggregateOffset != GcInfo::InvalidPointerOffset && "GcAggregate Not Found!");
+
+    SmallVector<uint32_t, 4> GcPtrOffsets;
+    const DataLayout &DataLayout = JitContext->CurrentModule->getDataLayout();
+    GcInfo::getGcPointers(StructTy, DataLayout, GcPtrOffsets);
+
+    for (uint32_t GcPtrOffset : GcPtrOffsets) {
+      uint32_t Offset = AggregateOffset + GcPtrOffset;
+      assert(SlotMap.find(Offset) == SlotMap.end() && "Untracked slot already allocated");
+
+      GcSlotId SlotID =
+        Encoder.GetStackSlotId(Offset, SlotFlags, GC_SP_REL);
+      SlotMap[Offset] = SlotID;
+
+
+#if !defined(NDEBUG)
+      if (EmitLogs) {
+        dbgs() << "    [" << SlotID
+          << "]: " << "sp+" << Offset << "\n";
+      }
+#endif // !NDEBUG
+    }
+  }
+
+#if !defined(NDEBUG)
+  if (EmitLogs) {
+    dbgs() << "    --\n";
+  }
+#endif // !NDEBUG
+
+}
+
+void GcInfoEmitter::emitEncoding() {
   // Finalize Slot IDs to enable compact representation
   Encoder.FinalizeSlotIds();
 
@@ -317,9 +394,7 @@ void GcInfoEmitter::encodeLiveness(const Function &F) {
   // Encode Call-sites
   Encoder.DefineCallSites(CallSites, CallSiteSizes, NumCallSites);
 #endif // defined(PARTIALLY_INTERRUPTIBLE_GC_SUPPORTED)
-}
 
-void GcInfoEmitter::emitEncoding() {
   Encoder.Build();
   Encoder.Emit();
 }
@@ -331,9 +406,15 @@ GcInfoEmitter::~GcInfoEmitter() {
 #endif // defined(PARTIALLY_INTERRUPTIBLE_GC_SUPPORTED)
 }
 
-void GcInfoEmitter::emitGCInfo(const Function &F) {
+void GcInfoEmitter::emitGCInfo(const Function &F, const GcInfo &GcInfo) {
+  assert(&F == GcInfo.Function);
+  
   encodeHeader(F);
+  // Pinned slots must be allocated before Live Slots 
+  encodePinned(F, GcInfo);
   encodeLiveness(F);
+  // Aggregate slots should be allocated after Live Slots
+  encodeGcAggregates(F, GcInfo);
   emitEncoding();
 }
 
@@ -346,7 +427,7 @@ void GcInfoEmitter::emitGCInfo() {
   for (; Iterator != End; ++Iterator) {
     const Function &F = *Iterator;
     if (shouldEmitGCInfo(F)) {
-      emitGCInfo(F);
+      emitGCInfo(F, *JitContext->GcInfo);
     }
   }
 }
@@ -355,7 +436,7 @@ bool GcInfoEmitter::shouldEmitGCInfo(const Function &F) {
   return !F.isDeclaration() && GcInfo::isGcFunction(&F);
 }
 
-bool GcInfoEmitter::isStackBaseFramePointer(const llvm::Function &F) {
+bool GcInfoEmitter::isStackBaseFramePointer(const Function &F) {
   Attribute Attribute = F.getFnAttribute("no-frame-pointer-elim");
   return (Attribute.getValueAsString() == "true");
 }
@@ -365,23 +446,33 @@ GcInfoRecorder::GcInfoRecorder() : MachineFunctionPass(ID) {
 }
 
 bool GcInfoRecorder::runOnMachineFunction(MachineFunction &MF) {
-  if (!GcInfo::isGcFunction(MF.getFunction())) {
+  const Function *F = MF.getFunction();
+  if (!GcInfo::isGcFunction(F)) {
     return false;
   }
 
-  dbgs() << "GcInfoRecorder: " << MF.getFunction()->getName() << "\n";
+  LLILCJitContext *Context = LLILCJit::TheJit->getLLILCJitContext();
+  GcInfo *GcInfo = Context->GcInfo;
+  ValueMap<const AllocaInst *, int32_t> &GcAggregates =
+    GcInfo->GcAggregates;
+  ValueMap<const AllocaInst *, int32_t> &PinnedSlots =
+    GcInfo->PinnedSlots;
+
+  assert(F == GcInfo->Function && "Function mismatch");
+
+#if !defined(NDEBUG)
+  bool EmitLogs = Context->Options->LogGcInfo;
+
+  if (EmitLogs) {
+    dbgs() << "GcInfoRecorder: " << MF.getFunction()->getName() << "\n";
+  }
+#endif // !NDEBUG
 
   const MachineFrameInfo *MFI = MF.getFrameInfo();
   int ObjectIndexBegin = MFI->getObjectIndexBegin();
   int ObjectIndexEnd = MFI->getObjectIndexEnd();
-  //const DataLayout &DataLayout = MF.getDataLayout();
-  
-  GcInfo *GcInfo = LLILCJit::TheJit->getLLILCJitContext()->GcInfo;
-  llvm::ValueMap<const llvm::AllocaInst *, uint32_t> *GcAggregates = 
-    GcInfo->GcAggregates;
-  llvm::ValueMap<const llvm::AllocaInst *, uint32_t> *PinnedSlots = 
-    GcInfo->PinnedSlots;
   uint64_t SpOffset = MFI->getStackSize();
+  //const DataLayout &DataLayout = MF.getDataLayout();
 
   for (int i = ObjectIndexBegin; i < ObjectIndexEnd; i++) {
     const AllocaInst * Alloca = MFI->getObjectAllocation(i);
@@ -389,8 +480,17 @@ bool GcInfoRecorder::runOnMachineFunction(MachineFunction &MF) {
       continue;
     }
 
-    if (PinnedSlots->find(Alloca) != PinnedSlots->end()) {
-      (*PinnedSlots)[Alloca] = SpOffset + MFI->getObjectOffset(i);
+    if (PinnedSlots.find(Alloca) != PinnedSlots.end()) {
+      assert(PinnedSlots[Alloca] == GcInfo::InvalidPointerOffset && 
+             "Two allocations for the same pointer!");
+
+      PinnedSlots[Alloca] = SpOffset + MFI->getObjectOffset(i);
+
+#if !defined(NDEBUG)
+      if (EmitLogs) {
+        dbgs() << "Pinned Pointer: @" << PinnedSlots[Alloca] << "\n";
+      }
+#endif // !NDEBUG
     }
 
     Type *AllocatedType = Alloca->getAllocatedType();
@@ -404,20 +504,31 @@ bool GcInfoRecorder::runOnMachineFunction(MachineFunction &MF) {
       }
 
       assert(isa<StructType>(AllocatedType) && "Unexpected GcAggregate");
-      assert(GcAggregates->find(Alloca) != GcAggregates->end());
+      assert(GcAggregates.find(Alloca) != GcAggregates.end());
+      assert(GcAggregates[Alloca] == GcInfo::InvalidPointerOffset &&
+        "Two allocations for the same aggregate!");
 
-      (*GcAggregates)[Alloca] = SpOffset + MFI->getObjectOffset(i);
+      GcAggregates[Alloca] = SpOffset + MFI->getObjectOffset(i);
       
-      dbgs() << "Found GC Aggregate at offset "
-        << (*GcAggregates)[Alloca] << "\n";
+#if !defined(NDEBUG)
+      if (EmitLogs) {
+        dbgs() << "GC Aggregate: @" << GcAggregates[Alloca] << "\n";
+      }
+#endif // !NDEBUG
     }
   }
+
+#if !defined(NDEBUG)
+  if (EmitLogs) {
+    dbgs() << "\n";
+  }
+#endif // !NDEBUG
 
   return false; // success
 }
 
 bool GcInfo::isGcPointer(const Type *Type) {
-  const PointerType *PtrType = dyn_cast<llvm::PointerType>(Type);
+  const PointerType *PtrType = dyn_cast<PointerType>(Type);
   if (PtrType != nullptr) {
     return PtrType->getAddressSpace() == GcInfo::ManagedAddressSpace;
   }
@@ -457,28 +568,78 @@ bool GcInfo::isGcFunction(const llvm::Function *F) {
   return (CoreCLRName == F->getGC());
 }
 
-GcInfo::GcInfo() : PinnedSlots(nullptr), GcAggregates(nullptr) {
+GcInfo::GcInfo(const llvm::Function* F) :
+  GSCookie(nullptr), SecurityObject(nullptr), GenericsContext(nullptr) {
+  Function = F;
+  GSCookieOffset = GcInfo::InvalidPointerOffset;
+  SecurityObjectOffset = GcInfo::InvalidPointerOffset;
+  GenericsContextOffset = GcInfo::InvalidPointerOffset;
 }
 
 GcInfo::~GcInfo() {
-  delete PinnedSlots;
-  delete GcAggregates;
 }
 
 void GcInfo::recordPinnedSlot(AllocaInst* Alloca) {
-  if (PinnedSlots == nullptr) {
-    PinnedSlots = new llvm::ValueMap<const llvm::AllocaInst *, uint32_t>;
-  }
-
-  assert(PinnedSlots->find(Alloca) == PinnedSlots->end());
-  (*PinnedSlots)[Alloca] = 0;
+  assert(PinnedSlots.find(Alloca) == PinnedSlots.end());
+  PinnedSlots[Alloca] = GcInfo::InvalidPointerOffset;
 }
 
 void GcInfo::recordGcAggregate(AllocaInst* Alloca) {
-  if (GcAggregates == nullptr) {
-    GcAggregates = new llvm::ValueMap<const llvm::AllocaInst *, uint32_t>;
-  }
+  assert(GcAggregates.find(Alloca) == GcAggregates.end());
+  GcAggregates[Alloca] = GcInfo::InvalidPointerOffset;
+}
 
-  assert(GcAggregates->find(Alloca) == GcAggregates->end());
-  (*GcAggregates)[Alloca] = 0;
+void GcInfo::getGcPointers(StructType *StructTy,
+                         const DataLayout &DataLayout,
+                         SmallVector<uint32_t, 4> &Pointers) {
+
+  assert(StructTy->isSized());
+  const uint32_t PointerSize = DataLayout.getPointerSize();
+  const uint32_t TypeSize = DataLayout.getTypeStoreSize(StructTy);
+
+  const StructLayout *MainStructLayout =
+    DataLayout.getStructLayout(StructTy);
+
+    // Walk through the type in pointer-sized jumps.
+    for (uint32_t GcOffset = 0; GcOffset < TypeSize; GcOffset += PointerSize) {
+      const uint32_t FieldIndex =
+        MainStructLayout->getElementContainingOffset(GcOffset);
+      Type *FieldTy = StructTy->getStructElementType(FieldIndex);
+
+      // If the field is a value class we need to dive in
+      // to its fields and so on, until we reach a primitive type.
+      if (FieldTy->isStructTy()) {
+
+        // Prepare to loop through the nesting.
+        const StructLayout *OuterStructLayout = MainStructLayout;
+        uint32_t OuterOffset = GcOffset;
+        uint32_t OuterIndex = FieldIndex;
+
+        while (FieldTy->isStructTy()) {
+          // Offset of the Inner class within the outer class
+          const uint32_t InnerBaseOffset =
+            OuterStructLayout->getElementOffset(OuterIndex);
+          // Inner class should start at or before the outer offset
+          assert(InnerBaseOffset <= OuterOffset);
+          // Determine target offset relative to this inner class.
+          const uint32_t InnerOffset = OuterOffset - InnerBaseOffset;
+          // Get the inner class layout
+          StructType *InnerStructTy = cast<StructType>(FieldTy);
+          const StructLayout *InnerStructLayout =
+            DataLayout.getStructLayout(InnerStructTy);
+          // Find the field at that target offset.
+          const uint32_t InnerIndex =
+            InnerStructLayout->getElementContainingOffset(InnerOffset);
+          // Update for next iteration.
+          FieldTy = InnerStructTy->getStructElementType(InnerIndex);
+          OuterStructLayout = InnerStructLayout;
+          OuterOffset = InnerOffset;
+          OuterIndex = InnerIndex;
+        }
+      }
+
+      if (GcInfo::isGcPointer(FieldTy)) {
+        Pointers.push_back(GcOffset);
+      }
+    }
 }

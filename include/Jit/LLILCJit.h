@@ -113,6 +113,7 @@ public:
   //@}
 
   /// \name GC Information
+  /// This should be GcModuleInfo
   GcInfo *GcInfo;
 };
 

@@ -283,6 +283,10 @@ void GenIR::readerPrePass(uint8_t *Buffer, uint32_t NumBytes) {
       ABIMethodSignature(MethodSignature, *this, *JitContext->TheABIInfo);
   Function = ABIMethodSig.createFunction(*this, *JitContext->CurrentModule);
 
+  if (JitContext->Options->DoInsertStatepoints) {
+    JitContext->GcInfo = new GcInfo(Function);
+  }
+
   llvm::LLVMContext &LLVMContext = *JitContext->LLVMContext;
   EntryBlock = BasicBlock::Create(LLVMContext, "entry", Function);
 
@@ -527,8 +531,6 @@ void GenIR::insertIRToKeepGenericContextAlive() {
 
   if (JitContext->Options->DoInsertStatepoints) {
     JitContext->GcInfo->GenericsContext = cast<AllocaInst>(ContextLocalAddress);
-
-    throw NotYetImplementedException("NYI: Generic Context reporting");
   }
 }
 
@@ -570,7 +572,6 @@ void GenIR::insertIRForSecurityObject() {
 
   if (JitContext->Options->DoInsertStatepoints) {
     JitContext->GcInfo->SecurityObject = cast<AllocaInst>(SecurityObjectAddress);
-    throw NotYetImplementedException("NYI: Security Object Reporting");
   }
 }
 
@@ -703,6 +704,7 @@ AllocaInst *GenIR::createAlloca(Type *T, Value *ArraySize,
     Value *Args[] = { AllocaInst };
     const bool MayThrow = false;
     makeCall(FrameEscape, MayThrow, Args);
+    JitContext->GcInfo->recordGcAggregate(AllocaInst);
   }
 
   return AllocaInst;
@@ -761,12 +763,8 @@ void GenIR::createSym(uint32_t Num, bool IsAuto, CorInfoType CorType,
   AllocaInst *AllocaInst = createAlloca(LLVMType, nullptr,
       UseNumber ? Twine(SymName) + Twine(Number) : Twine(SymName));
 
-  if (JitContext->Options->DoInsertStatepoints) {
-    if (IsPinned && JitContext->Options->DoInsertStatepoints) {
-      JitContext->GcInfo->recordPinnedSlot(AllocaInst);
-    }
-
-    throw NotYetImplementedException("NYI: Pinning with Precise GC");
+  if (IsPinned && JitContext->Options->DoInsertStatepoints) {
+    JitContext->GcInfo->recordPinnedSlot(AllocaInst);
   }
 
   DIFile *Unit = DBuilder->createFile(LLILCDebugInfo.TheCU->getFilename(),
@@ -2033,69 +2031,25 @@ Type *GenIR::getClassTypeWorker(
   // Note the runtime only gives us size and gc info for value classes so
   // we can't do this more generally.
 
-  // Verify overall size matches up.
+#ifndef NDEBUG
   if (HaveClassSize) {
-    ASSERT(EEClassSize == DataLayout->getTypeSizeInBits(StructTy) / 8);
-
-    // Verify that the LLVM type contains the same information
-    // as the GC field info from the runtime.
-    const StructLayout *MainStructLayout =
-        DataLayout->getStructLayout(StructTy);
+    GCLayout *RuntimeGCInfo = getClassGCLayout(ClassHandle);
+    llvm::SmallVector<uint32_t, 4> GcPtrOffsets;
+    GcInfo::getGcPointers(StructTy, *DataLayout, GcPtrOffsets);
     const uint32_t PointerSize = DataLayout->getPointerSize();
 
-    // Walk through the type in pointer-sized jumps.
-    for (uint32_t GCOffset = 0; GCOffset < EEClassSize;
-         GCOffset += PointerSize) {
-      const uint32_t FieldIndex =
-          MainStructLayout->getElementContainingOffset(GCOffset);
-      Type *FieldTy = StructTy->getStructElementType(FieldIndex);
+    assert(((RuntimeGCInfo != nullptr) || (GcPtrOffsets.size() == 0)) &&
+      "Missing Runtime GC Layout for GC Struct");
 
-      // If the field is a value class we need to dive in
-      // to its fields and so on, until we reach a primitive type.
-      if (FieldTy->isStructTy()) {
-
-        // Prepare to loop through the nesting.
-        const StructLayout *OuterStructLayout = MainStructLayout;
-        uint32_t OuterOffset = GCOffset;
-        uint32_t OuterIndex = FieldIndex;
-
-        while (FieldTy->isStructTy()) {
-          // Offset of the Inner class within the outer class
-          const uint32_t InnerBaseOffset =
-              OuterStructLayout->getElementOffset(OuterIndex);
-          // Inner class should start at or before the outer offset
-          ASSERT(InnerBaseOffset <= OuterOffset);
-          // Determine target offset relative to this inner class.
-          const uint32_t InnerOffset = OuterOffset - InnerBaseOffset;
-          // Get the inner class layout
-          StructType *InnerStructTy = cast<StructType>(FieldTy);
-          const StructLayout *InnerStructLayout =
-              DataLayout->getStructLayout(InnerStructTy);
-          // Find the field at that target offset.
-          const uint32_t InnerIndex =
-              InnerStructLayout->getElementContainingOffset(InnerOffset);
-          // Update for next iteration.
-          FieldTy = InnerStructTy->getStructElementType(InnerIndex);
-          OuterStructLayout = InnerStructLayout;
-          OuterOffset = InnerOffset;
-          OuterIndex = InnerIndex;
-        }
-      }
-
-#ifndef NDEBUG
-      // LLVM's type and the runtime must agree here.
-      GCLayout *RuntimeGCInfo = getClassGCLayout(ClassHandle);
-      const bool ExpectGCPointer =
-          (RuntimeGCInfo != nullptr) &&
-          (RuntimeGCInfo->GCPointers[GCOffset / PointerSize] !=
-           CorInfoGCType::TYPE_GC_NONE);
-      const bool IsGCPointer = GcInfo::isGcPointer(FieldTy);
-      assert((ExpectGCPointer == IsGCPointer) &&
-             "llvm type incorrectly describes location of gc references");
-      free(RuntimeGCInfo);
-#endif
+    for (uint32_t GcOffset : GcPtrOffsets) {
+      assert((RuntimeGCInfo->GCPointers[GcOffset / PointerSize] !=
+              CorInfoGCType::TYPE_GC_NONE) &&
+              "llvm type incorrectly describes location of gc references");
     }
+
+    free(RuntimeGCInfo);
   }
+#endif
 
   // Return the struct or a pointer to it as requested.
   return ResultTy;
@@ -6390,7 +6344,7 @@ bool GenIR::interlockedIntrinsicBinOp(IRNode *Arg1, IRNode *Arg2,
 
   if (Op != AtomicRMWInst::BinOp::BAD_BINOP) {
     assert(Arg1->getType()->isPointerTy());
-    Type *CastTy = isManagedPointerType(Arg1->getType())
+    Type *CastTy = GcInfo::isGcPointer(Arg1->getType())
                      ? getManagedPointerType(Arg2->getType())
                      : getUnmanagedPointerType(Arg2->getType());
     Arg1 = (IRNode *)LLVMBuilder->CreatePointerCast(Arg1, CastTy);

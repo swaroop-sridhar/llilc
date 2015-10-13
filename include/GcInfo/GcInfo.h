@@ -19,17 +19,23 @@
 #include "gcinfoencoder.h"
 #include "jitpch.h"
 #include "LLILCJit.h"
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/IR/ValueMap.h"
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineFunctionPass.h"
+#include <vector>
 
 class GcInfoAllocator;
 class GcInfoEncoder;
+
+/// Per Jit Invocation GcInfo
 
 class GcInfo {
 public:
   static const uint32_t UnmanagedAddressSpace = 0;
   static const uint32_t ManagedAddressSpace = 1;
+  static const int32_t InvalidPointerOffset = -1;
 
   static bool isGcPointer(const llvm::Type *Type);
   static bool isGcAggregate(const llvm::Type *Type);
@@ -40,21 +46,34 @@ public:
     return Type->isPointerTy() && !isGcPointer(Type);
   }
   static bool isGcFunction(const llvm::Function *F);
+  static void getGcPointers(llvm::StructType *StructTy, 
+                            const llvm::DataLayout &DataLayout, 
+                            llvm::SmallVector<uint32_t, 4> &GcPtrOffsets);
 
-  GcInfo();
+  GcInfo(const llvm::Function *F);
   ~GcInfo();
 
   void recordPinnedSlot(llvm::AllocaInst* Alloca);
   void recordGcAggregate(llvm::AllocaInst* Alloca);
 
-  llvm::ValueMap<const llvm::AllocaInst *, uint32_t> *PinnedSlots;
-  llvm::ValueMap<const llvm::AllocaInst *, uint32_t> *GcAggregates;
+  const llvm::Function *Function;
+  llvm::ValueMap<const llvm::AllocaInst *, int32_t> PinnedSlots;
+  llvm::ValueMap<const llvm::AllocaInst *, int32_t> GcAggregates;
   llvm::AllocaInst *GSCookie;
-  uint32_t GSCookieOffset;
+  int32_t GSCookieOffset;
   llvm::AllocaInst *SecurityObject;
-  uint32_t SecurityObjectOffset;
+  int32_t SecurityObjectOffset;
   llvm::AllocaInst *GenericsContext;
-  uint32_t GenericsContextOffset;
+  int32_t GenericsContextOffset;
+};
+
+/// Per Function GcInfo
+
+class GcFuncInfo {
+public:
+  GcFuncInfo() {}
+  ~GcFuncInfo() {}
+
 };
 
 /// \brief This is the translator from LLVM's GC StackMaps
@@ -77,9 +96,11 @@ public:
   ~GcInfoEmitter();
 
 private:
-  void emitGCInfo(const llvm::Function &F);
+  void emitGCInfo(const llvm::Function &F, const GcInfo &GcInfo);
   void encodeHeader(const llvm::Function &F);
   void encodeLiveness(const llvm::Function &F);
+  void encodePinned(const llvm::Function &F, const GcInfo &GcInfo);
+  void encodeGcAggregates(const llvm::Function &F, const GcInfo &GcInfo);
   void emitEncoding();
 
   bool shouldEmitGCInfo(const llvm::Function &F);
@@ -99,6 +120,9 @@ private:
   // (where we emit one function per module) because of some additional
   // code like the gc.statepoint_poll() method.
   size_t OffsetCorrection;
+
+  // SlotMap
+  llvm::DenseMap<int32_t, uint32_t> SlotMap;
 
 #if !defined(NDEBUG)
   bool EmitLogs;
