@@ -471,8 +471,12 @@ bool GcInfoRecorder::runOnMachineFunction(MachineFunction &MF) {
   const MachineFrameInfo *MFI = MF.getFrameInfo();
   int ObjectIndexBegin = MFI->getObjectIndexBegin();
   int ObjectIndexEnd = MFI->getObjectIndexEnd();
-  uint64_t SpOffset = MFI->getStackSize();
-  //const DataLayout &DataLayout = MF.getDataLayout();
+
+  // MFI reports the allocation offsets in terms of the 
+  // incoming (caller's) StackPointer. Convert these in terms of the 
+  // current (callee's) StackPointer.
+  uint64_t StackPointerSize = MF.getDataLayout().getPointerSize();
+  uint64_t SpOffset = MFI->getStackSize() + StackPointerSize;
 
   for (int i = ObjectIndexBegin; i < ObjectIndexEnd; i++) {
     const AllocaInst * Alloca = MFI->getObjectAllocation(i);
@@ -494,8 +498,6 @@ bool GcInfoRecorder::runOnMachineFunction(MachineFunction &MF) {
     }
 
     Type *AllocatedType = Alloca->getAllocatedType();
-    //StructType *StructType = dyn_cast<StructType>(AllocatedType);
-    //const StructLayout *StructLayout = DataLayout.getStructLayout(StructType);
 
     if (GcInfo::isGcAggregate(AllocatedType)) {
       if (isa<VectorType>(AllocatedType)) {
