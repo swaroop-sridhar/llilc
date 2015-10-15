@@ -124,6 +124,7 @@ private:
   void encodePinned(const llvm::Function &F, const GcFuncInfo *GcFuncInfo);
   void encodeGcAggregates(const llvm::Function &F,
                           const GcFuncInfo *GcFuncInfo);
+  void finalizeEncoding();
   void emitEncoding();
 
   bool shouldEmitGCInfo(const llvm::Function &F);

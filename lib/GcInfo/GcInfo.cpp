@@ -649,7 +649,7 @@ void GcInfoEmitter::encodeGcAggregates(const Function &F,
 #endif // !NDEBUG
 }
 
-void GcInfoEmitter::emitEncoding() {
+void GcInfoEmitter::finalizeEncoding() {
   // Finalize Slot IDs to enable compact representation
   Encoder.FinalizeSlotIds();
 
@@ -657,7 +657,9 @@ void GcInfoEmitter::emitEncoding() {
   // Encode Call-sites
   Encoder.DefineCallSites(CallSites, CallSiteSizes, NumCallSites);
 #endif // defined(PARTIALLY_INTERRUPTIBLE_GC_SUPPORTED)
+}
 
+void GcInfoEmitter::emitEncoding() {
   Encoder.Build();
   Encoder.Emit();
 }
@@ -675,13 +677,14 @@ void GcInfoEmitter::emitGCInfo(const Function &F,
 
   if (JitContext->Options->DoInsertStatepoints) {
     assert((GcFuncInfo != nullptr) && "GC Function missing GcInfo");
-
-
     // Pinned slots must be allocated before Live Slots
     encodePinned(F, GcFuncInfo);
+    // Assign Slots for Tracked pointers and report their liveness
     encodeLiveness(F);
     // Aggregate slots should be allocated after Live Slots
     encodeGcAggregates(F, GcFuncInfo);
+    // Finalization must be done after all encodings
+    finalizeEncoding();
   }
 
   emitEncoding();
