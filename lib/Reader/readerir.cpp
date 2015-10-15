@@ -15,7 +15,6 @@
 
 #include "earlyincludes.h"
 #include "readerir.h"
-#include "GcInfo.h"
 #include "imeta.h"
 #include "newvstate.h"
 #include "llvm/ADT/Triple.h"
@@ -284,7 +283,7 @@ void GenIR::readerPrePass(uint8_t *Buffer, uint32_t NumBytes) {
   Function = ABIMethodSig.createFunction(*this, *JitContext->CurrentModule);
 
   if (JitContext->Options->DoInsertStatepoints) {
-    JitContext->GcInfo = new GcInfo(Function);
+    GcFuncInfo = JitContext->GcInfo->newGcInfo(Function);
   }
 
   llvm::LLVMContext &LLVMContext = *JitContext->LLVMContext;
@@ -467,7 +466,7 @@ void GenIR::readerPostPass(bool IsImportOnly) {
 
   if (JitContext->Options->DoInsertStatepoints) {
     SmallVector<Value*, 4> EscapingLocs;
-    JitContext->GcInfo->getEscapingLocations(EscapingLocs);
+    GcFuncInfo->getEscapingLocations(EscapingLocs);
 
     if (EscapingLocs.size() > 0) {
       Value *FrameEscape = Intrinsic::getDeclaration(
@@ -528,7 +527,7 @@ void GenIR::insertIRToKeepGenericContextAlive() {
   // TM->Options.NoFramePointerElim = true;
 
   if (JitContext->Options->DoInsertStatepoints) {
-    JitContext->GcInfo->GenericsContext = cast<AllocaInst>(ContextLocalAddress);
+    GcFuncInfo->GenericsContext = cast<AllocaInst>(ContextLocalAddress);
   }
   else {
     // Indicate that the context location's address escapes by inserting a call
@@ -575,15 +574,8 @@ void GenIR::insertIRForSecurityObject() {
 
   LLVMBuilder->restoreIP(SavedInsertPoint);
 
-  // TODO: if passing the security object's address to the helper is not enough
-  // to keep it live throughout the method, find another way to ensure this.
-
-  // TODO: we must convey the offset of the security object to the runtime
-  // via the GC encoding.
-  // https://github.com/dotnet/llilc/issues/767
-
   if (JitContext->Options->DoInsertStatepoints) {
-    JitContext->GcInfo->SecurityObject = cast<AllocaInst>(SecurityObjectAddress);
+    GcFuncInfo->SecurityObject = cast<AllocaInst>(SecurityObjectAddress);
   }
 }
 
@@ -711,7 +703,7 @@ AllocaInst *GenIR::createAlloca(Type *T, Value *ArraySize,
   AllocaInst *AllocaInst = LLVMBuilder->CreateAlloca(T, ArraySize, Name);
   
   if (GcInfo::isGcAggregate(T)) {
-    JitContext->GcInfo->recordGcAggregate(AllocaInst);
+    GcFuncInfo->recordGcAggregate(AllocaInst);
   }
 
   return AllocaInst;
@@ -771,7 +763,7 @@ void GenIR::createSym(uint32_t Num, bool IsAuto, CorInfoType CorType,
     UseNumber ? Twine(SymName) + Twine(Number) : Twine(SymName));
 
   if (IsPinned && JitContext->Options->DoInsertStatepoints) {
-    JitContext->GcInfo->recordPinnedSlot(AllocaInst);
+    GcFuncInfo->recordPinnedSlot(AllocaInst);
   }
 
   DIFile *Unit = DBuilder->createFile(LLILCDebugInfo.TheCU->getFilename(),

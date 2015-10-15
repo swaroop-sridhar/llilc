@@ -18,7 +18,6 @@
 #include "LLILCJit.h"
 #include "Target.h"
 #include "llvm/ADT/SmallBitVector.h"
-#include "llvm/IR/Intrinsics.h"
 #include "llvm/Object/StackMapParser.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
 #include <sstream>
@@ -66,27 +65,6 @@ bool GcInfo::isGcFunction(const llvm::Function *F) {
 
   const StringRef CoreCLRName("coreclr");
   return (CoreCLRName == F->getGC());
-}
-
-GcInfo::GcInfo(const llvm::Function* F) :
-  GsCookie(nullptr), SecurityObject(nullptr), GenericsContext(nullptr) {
-  Function = F;
-  GSCookieOffset = GcInfo::InvalidPointerOffset;
-  SecurityObjectOffset = GcInfo::InvalidPointerOffset;
-  GenericsContextOffset = GcInfo::InvalidPointerOffset;
-}
-
-GcInfo::~GcInfo() {
-}
-
-void GcInfo::recordPinnedSlot(AllocaInst* Alloca) {
-  assert(PinnedSlots.find(Alloca) == PinnedSlots.end());
-  PinnedSlots[Alloca] = GcInfo::InvalidPointerOffset;
-}
-
-void GcInfo::recordGcAggregate(AllocaInst* Alloca) {
-  assert(GcAggregates.find(Alloca) == GcAggregates.end());
-  GcAggregates[Alloca] = GcInfo::InvalidPointerOffset;
 }
 
 void GcInfo::getGcPointers(StructType *StructTy,
@@ -144,7 +122,47 @@ void GcInfo::getGcPointers(StructType *StructTy,
   }
 }
 
-void GcInfo::getEscapingLocations(SmallVector<Value*, 4> &EscapingLocs) {
+GcFuncInfo * GcInfo::newGcInfo(const llvm::Function *F) {
+  assert(getGcInfo(F) == nullptr && "Duplicate GcInfo");
+  GcFuncInfo *GcFInfo = new GcFuncInfo(F);
+  GcInfoMap[F] = GcFInfo;
+  return GcFInfo;
+}
+
+GcFuncInfo * GcInfo::getGcInfo(const llvm::Function *F) {
+  auto Iterator = GcInfoMap.find(F);
+
+  if (Iterator == GcInfoMap.end()) {
+    return nullptr;
+  }
+
+  GcFuncInfo *GcFInfo = Iterator->second;
+  assert(F == GcFInfo->Function && "Function mismatch");
+
+  return GcFInfo;
+}
+
+//-------------------------------GcFuncInfo------------------------------------------
+
+GcFuncInfo::GcFuncInfo(const llvm::Function* F) :
+  GsCookie(nullptr), SecurityObject(nullptr), GenericsContext(nullptr) {
+  Function = F;
+  GSCookieOffset = GcInfo::InvalidPointerOffset;
+  SecurityObjectOffset = GcInfo::InvalidPointerOffset;
+  GenericsContextOffset = GcInfo::InvalidPointerOffset;
+}
+
+void GcFuncInfo::recordPinnedSlot(AllocaInst* Alloca) {
+  assert(PinnedSlots.find(Alloca) == PinnedSlots.end());
+  PinnedSlots[Alloca] = GcInfo::InvalidPointerOffset;
+}
+
+void GcFuncInfo::recordGcAggregate(AllocaInst* Alloca) {
+  assert(GcAggregates.find(Alloca) == GcAggregates.end());
+  GcAggregates[Alloca] = GcInfo::InvalidPointerOffset;
+}
+
+void GcFuncInfo::getEscapingLocations(SmallVector<Value*, 4> &EscapingLocs) {
   if (GsCookie != nullptr) {
     EscapingLocs.push_back(GsCookie);
   }
@@ -166,7 +184,6 @@ void GcInfo::getEscapingLocations(SmallVector<Value*, 4> &EscapingLocs) {
   }
 }
 
-
 //-------------------------------GcInfoRecorder-----------------------------------
 
 char GcInfoRecorder::ID = 0;
@@ -178,13 +195,11 @@ bool GcInfoRecorder::runOnMachineFunction(MachineFunction &MF) {
   }
 
   LLILCJitContext *Context = LLILCJit::TheJit->getLLILCJitContext();
-  GcInfo *GcInfo = Context->GcInfo;
+  GcFuncInfo *GcFuncInfo = Context->GcInfo->getGcInfo(F);
   ValueMap<const AllocaInst *, int32_t> &GcAggregates =
-    GcInfo->GcAggregates;
+    GcFuncInfo->GcAggregates;
   ValueMap<const AllocaInst *, int32_t> &PinnedSlots =
-    GcInfo->PinnedSlots;
-
-  assert(F == GcInfo->Function && "Function mismatch");
+    GcFuncInfo->PinnedSlots;
 
 #if !defined(NDEBUG)
   bool EmitLogs = Context->Options->LogGcInfo;
@@ -544,7 +559,7 @@ void GcInfoEmitter::encodeLiveness(const Function &F) {
 }
 
 void GcInfoEmitter::encodePinned(const Function &F,
-  const GcInfo &GcInfo) {
+  const GcFuncInfo &GcFuncInfo) {
 
   const GcSlotFlags SlotFlags =
     (GcSlotFlags)(GC_SLOT_BASE | GC_SLOT_PINNED | GC_SLOT_UNTRACKED);
@@ -555,7 +570,7 @@ void GcInfoEmitter::encodePinned(const Function &F,
   }
 #endif // !NDEBUG
 
-  for (auto Pin : GcInfo.PinnedSlots) {
+  for (auto Pin : GcFuncInfo.PinnedSlots) {
     int32_t Offset = Pin.second;
     assert(Offset != GcInfo::InvalidPointerOffset && "Pinned Slot Not Found!");
 
@@ -574,7 +589,7 @@ void GcInfoEmitter::encodePinned(const Function &F,
 }
 
 void GcInfoEmitter::encodeGcAggregates(const Function &F,
-  const GcInfo &GcInfo) {
+  const GcFuncInfo &GcFuncInfo) {
 #if !defined(NDEBUG)
   if (EmitLogs) {
     dbgs() << "  Untracked Slots:\n";
@@ -584,7 +599,7 @@ void GcInfoEmitter::encodeGcAggregates(const Function &F,
   const GcSlotFlags SlotFlags =
     (GcSlotFlags)(GC_SLOT_BASE | GC_SLOT_UNTRACKED);
 
-  for (auto Aggregate : GcInfo.GcAggregates) {
+  for (auto Aggregate : GcFuncInfo.GcAggregates) {
     const AllocaInst *Alloca = Aggregate.first;
     Type* Type = Alloca->getAllocatedType();
     assert(isa<StructType>(Type) && "GcAggregate is not a struct");
@@ -643,28 +658,24 @@ GcInfoEmitter::~GcInfoEmitter() {
 #endif // defined(PARTIALLY_INTERRUPTIBLE_GC_SUPPORTED)
 }
 
-void GcInfoEmitter::emitGCInfo(const Function &F, const GcInfo &GcInfo) {
-  assert(&F == GcInfo.Function);
-
+void GcInfoEmitter::emitGCInfo(const Function &F, const GcFuncInfo &GcFuncInfo) {
   encodeHeader(F);
   // Pinned slots must be allocated before Live Slots 
-  encodePinned(F, GcInfo);
+  encodePinned(F, GcFuncInfo);
   encodeLiveness(F);
   // Aggregate slots should be allocated after Live Slots
-  encodeGcAggregates(F, GcInfo);
+  encodeGcAggregates(F, GcFuncInfo);
   emitEncoding();
 }
 
 void GcInfoEmitter::emitGCInfo() {
-  const Module::FunctionListType &FunctionList =
-    JitContext->CurrentModule->getFunctionList();
-  Module::const_iterator Iterator = FunctionList.begin();
-  Module::const_iterator End = FunctionList.end();
+  GcInfo *GcInfo = JitContext->GcInfo;
 
-  for (; Iterator != End; ++Iterator) {
-    const Function &F = *Iterator;
+  for (Function &F : *JitContext->CurrentModule) {
     if (shouldEmitGCInfo(F)) {
-      emitGCInfo(F, *JitContext->GcInfo);
+      GcFuncInfo *GcFuncInfo = GcInfo->getGcInfo(&F);
+      assert(GcFuncInfo != nullptr && "GC Function missing GcInfo");
+      emitGCInfo(F, *GcFuncInfo);
     }
   }
 }

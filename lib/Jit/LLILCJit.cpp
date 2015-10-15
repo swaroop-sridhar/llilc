@@ -253,6 +253,7 @@ CorJitResult LLILCJit::compileMethod(ICorJitInfo *JitInfo,
                                        DEBUG_METADATA_VERSION);
   Context.MethodName = Context.CurrentModule->getModuleIdentifier();
   Context.TheABIInfo = ABIInfo::get(*Context.CurrentModule);
+  Context.GcInfo = new GcInfo();
 
   // Initialize per invocation JIT options. This should be done after the
   // rest of the Context is filled out as it has dependencies on JitInfo,

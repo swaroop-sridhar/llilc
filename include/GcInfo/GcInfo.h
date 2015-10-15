@@ -30,7 +30,28 @@
 class GcInfoAllocator;
 class GcInfoEncoder;
 
-/// Per Jit Invocation GcInfo
+/// Per Function GcInfo
+
+class GcFuncInfo {
+public:
+  GcFuncInfo(const llvm::Function *F);
+
+  void recordPinnedSlot(llvm::AllocaInst* Alloca);
+  void recordGcAggregate(llvm::AllocaInst* Alloca);
+  void getEscapingLocations(llvm::SmallVector<llvm::Value*, 4> &EscapingLocs);
+
+  const llvm::Function *Function;
+  llvm::ValueMap<const llvm::AllocaInst *, int32_t> PinnedSlots;
+  llvm::ValueMap<const llvm::AllocaInst *, int32_t> GcAggregates;
+  llvm::AllocaInst *GsCookie;
+  int32_t GSCookieOffset;
+  llvm::AllocaInst *SecurityObject;
+  int32_t SecurityObjectOffset;
+  llvm::AllocaInst *GenericsContext;
+  int32_t GenericsContextOffset;
+};
+
+/// Per Module / Jit Invocation GcInfo
 
 class GcInfo {
 public:
@@ -51,31 +72,10 @@ public:
                             const llvm::DataLayout &DataLayout, 
                             llvm::SmallVector<uint32_t, 4> &GcPtrOffsets);
 
-  GcInfo(const llvm::Function *F);
-  ~GcInfo();
+  GcFuncInfo * newGcInfo(const llvm::Function *F);
+  GcFuncInfo * getGcInfo(const llvm::Function *F);
 
-  void recordPinnedSlot(llvm::AllocaInst* Alloca);
-  void recordGcAggregate(llvm::AllocaInst* Alloca);
-
-  void getEscapingLocations(llvm::SmallVector<llvm::Value*, 4> &EscapingLocs);
-
-  const llvm::Function *Function;
-  llvm::ValueMap<const llvm::AllocaInst *, int32_t> PinnedSlots;
-  llvm::ValueMap<const llvm::AllocaInst *, int32_t> GcAggregates;
-  llvm::AllocaInst *GsCookie;
-  int32_t GSCookieOffset;
-  llvm::AllocaInst *SecurityObject;
-  int32_t SecurityObjectOffset;
-  llvm::AllocaInst *GenericsContext;
-  int32_t GenericsContextOffset;
-};
-
-/// Per Function GcInfo
-
-class GcFuncInfo {
-public:
-  GcFuncInfo() {}
-  ~GcFuncInfo() {}
+  llvm::ValueMap<const llvm::Function *, GcFuncInfo *> GcInfoMap;
 
 };
 
@@ -99,11 +99,11 @@ public:
   ~GcInfoEmitter();
 
 private:
-  void emitGCInfo(const llvm::Function &F, const GcInfo &GcInfo);
+  void emitGCInfo(const llvm::Function &F, const GcFuncInfo &GcFuncInfo);
   void encodeHeader(const llvm::Function &F);
   void encodeLiveness(const llvm::Function &F);
-  void encodePinned(const llvm::Function &F, const GcInfo &GcInfo);
-  void encodeGcAggregates(const llvm::Function &F, const GcInfo &GcInfo);
+  void encodePinned(const llvm::Function &F, const GcFuncInfo &GcFuncInfo);
+  void encodeGcAggregates(const llvm::Function &F, const GcFuncInfo &GcFuncInfo);
   void emitEncoding();
 
   bool shouldEmitGCInfo(const llvm::Function &F);
