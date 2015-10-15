@@ -68,7 +68,7 @@ JitOptions::JitOptions(LLILCJitContext &Context) {
   UseConservativeGC = queryUseConservativeGC(Context);
 
   // Set whether to insert statepoints.
-  DoInsertStatepoints = queryDoInsertStatepoints(Context);
+  DoInsertStatepoints = true;// queryDoInsertStatepoints(Context);
 
   DoSIMDIntrinsic = queryDoSIMDIntrinsic(Context);
 
