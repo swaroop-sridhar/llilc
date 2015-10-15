@@ -22,7 +22,6 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/IR/ValueMap.h"
-#include "llvm/IR/IRBuilder.h"
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineFunctionPass.h"
 #include <vector>
@@ -44,7 +43,7 @@ public:
   llvm::ValueMap<const llvm::AllocaInst *, int32_t> PinnedSlots;
   llvm::ValueMap<const llvm::AllocaInst *, int32_t> GcAggregates;
   llvm::AllocaInst *GsCookie;
-  int32_t GSCookieOffset;
+  int32_t GsCookieOffset;
   llvm::AllocaInst *SecurityObject;
   int32_t SecurityObjectOffset;
   llvm::AllocaInst *GenericsContext;

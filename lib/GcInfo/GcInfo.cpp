@@ -147,7 +147,7 @@ GcFuncInfo * GcInfo::getGcInfo(const llvm::Function *F) {
 GcFuncInfo::GcFuncInfo(const llvm::Function* F) :
   GsCookie(nullptr), SecurityObject(nullptr), GenericsContext(nullptr) {
   Function = F;
-  GSCookieOffset = GcInfo::InvalidPointerOffset;
+  GsCookieOffset = GcInfo::InvalidPointerOffset;
   SecurityObjectOffset = GcInfo::InvalidPointerOffset;
   GenericsContextOffset = GcInfo::InvalidPointerOffset;
 }
@@ -225,37 +225,58 @@ bool GcInfoRecorder::runOnMachineFunction(MachineFunction &MF) {
       continue;
     }
 
-    if (PinnedSlots.find(Alloca) != PinnedSlots.end()) {
-      assert(PinnedSlots[Alloca] == GcInfo::InvalidPointerOffset && 
-             "Two allocations for the same pointer!");
+    int32_t SlotOffset = SpOffset + MFI->getObjectOffset(i);
 
-      PinnedSlots[Alloca] = SpOffset + MFI->getObjectOffset(i);
+    if (GcFuncInfo->GsCookie == Alloca) {
+      GcFuncInfo->GsCookieOffset = SlotOffset;
 
 #if !defined(NDEBUG)
       if (EmitLogs) {
-        dbgs() << "Pinned Pointer: @" << PinnedSlots[Alloca] << "\n";
+        dbgs() << "GSCookie: @" << SlotOffset << "\n";
+      }
+#endif // !NDEBUG
+
+    } else if (GcFuncInfo->SecurityObject == Alloca) {
+      GcFuncInfo->SecurityObjectOffset = SlotOffset;
+
+#if !defined(NDEBUG)
+      if (EmitLogs) {
+        dbgs() << "SecurityObjectOffset: @" << SlotOffset << "\n";
+      }
+#endif // !NDEBUG
+    } else if (GcFuncInfo->GenericsContext == Alloca) {
+      GcFuncInfo->GenericsContextOffset = SlotOffset;
+
+#if !defined(NDEBUG)
+      if (EmitLogs) {
+        dbgs() << "GenericsContext: @" << SlotOffset << "\n";
+      }
+#endif // !NDEBUG
+    } else if (PinnedSlots.find(Alloca) != PinnedSlots.end()) {
+      assert(PinnedSlots[Alloca] == GcInfo::InvalidPointerOffset && 
+             "Two allocations for the same pointer!");
+
+      PinnedSlots[Alloca] = SlotOffset;
+
+#if !defined(NDEBUG)
+      if (EmitLogs) {
+        dbgs() << "Pinned Pointer: @" << SlotOffset << "\n";
       }
 #endif // !NDEBUG
     }
 
     Type *AllocatedType = Alloca->getAllocatedType();
-
     if (GcInfo::isGcAggregate(AllocatedType)) {
-      if (isa<VectorType>(AllocatedType)) {
-        // Vectors are handled by RewriteStatepointsForGC phase.
-        continue;
-      }
-
       assert(isa<StructType>(AllocatedType) && "Unexpected GcAggregate");
       assert(GcAggregates.find(Alloca) != GcAggregates.end());
       assert(GcAggregates[Alloca] == GcInfo::InvalidPointerOffset &&
         "Two allocations for the same aggregate!");
 
-      GcAggregates[Alloca] = SpOffset + MFI->getObjectOffset(i);
+      GcAggregates[Alloca] = SlotOffset;
       
 #if !defined(NDEBUG)
       if (EmitLogs) {
-        dbgs() << "GC Aggregate: @" << GcAggregates[Alloca] << "\n";
+        dbgs() << "GC Aggregate: @" << SlotOffset << "\n";
       }
 #endif // !NDEBUG
     }
