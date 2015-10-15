@@ -308,6 +308,7 @@ protected:
   std::vector<IRNode *> Stack;
 
 public:
+
   /// \brief Destructor
   virtual ~ReaderStack() {}
 
