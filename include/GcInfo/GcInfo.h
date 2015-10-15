@@ -22,6 +22,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/IR/ValueMap.h"
+#include "llvm/IR/IRBuilder.h"
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineFunctionPass.h"
 #include <vector>
@@ -56,10 +57,12 @@ public:
   void recordPinnedSlot(llvm::AllocaInst* Alloca);
   void recordGcAggregate(llvm::AllocaInst* Alloca);
 
+  void getEscapingLocations(llvm::SmallVector<llvm::Value*, 4> &EscapingLocs);
+
   const llvm::Function *Function;
   llvm::ValueMap<const llvm::AllocaInst *, int32_t> PinnedSlots;
   llvm::ValueMap<const llvm::AllocaInst *, int32_t> GcAggregates;
-  llvm::AllocaInst *GSCookie;
+  llvm::AllocaInst *GsCookie;
   int32_t GSCookieOffset;
   llvm::AllocaInst *SecurityObject;
   int32_t SecurityObjectOffset;
@@ -138,12 +141,11 @@ private:
 
 class GcInfoRecorder : public llvm::MachineFunctionPass {
 public:
-  explicit GcInfoRecorder();
+  explicit GcInfoRecorder() : MachineFunctionPass(ID) {}
   bool runOnMachineFunction(llvm::MachineFunction &MF) override;
 
 private:
   static char ID;
 };
-
 
 #endif // GCINFO_H

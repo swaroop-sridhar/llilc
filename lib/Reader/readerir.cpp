@@ -464,6 +464,20 @@ void GenIR::readerPostVisit() {
 }
 
 void GenIR::readerPostPass(bool IsImportOnly) {
+
+  if (JitContext->Options->DoInsertStatepoints) {
+    SmallVector<Value*, 4> EscapingLocs;
+    JitContext->GcInfo->getEscapingLocations(EscapingLocs);
+
+    if (EscapingLocs.size() > 0) {
+      Value *FrameEscape = Intrinsic::getDeclaration(
+        JitContext->CurrentModule, Intrinsic::localescape);
+
+      LLVMBuilder->SetInsertPoint(Function->begin()->end()->getPrevNode());
+      LLVMBuilder->CreateCall(FrameEscape, EscapingLocs);
+    }
+  }
+
   // Crossgen in ReadyToRun mode records structs that method compilation
   // depends on via getClassSize calls. Therefore, we shouldn't cache type info
   // across methods.
@@ -509,29 +523,27 @@ void GenIR::insertIRToKeepGenericContextAlive() {
     ContextLocalAddress = Arguments[MethodSignature.getTypeArgIndex()];
   }
 
-  // Indicate that the context location's address escapes by inserting a call
-  // to llvm.frameescape. Put that call just after the last alloca or the
-  // store to the scratch local.
-  LLVMBuilder->SetInsertPoint(InsertPoint->getNextNode());
-  Value *FrameEscape = Intrinsic::getDeclaration(JitContext->CurrentModule,
-                                                 Intrinsic::localescape);
-  Value *Args[] = {ContextLocalAddress};
-  const bool MayThrow = false;
-  makeCall(FrameEscape, MayThrow, Args);
-  // Don't move TempInsertionPoint up since what we added was not an alloca
-  LLVMBuilder->restoreIP(SavedInsertPoint);
-
   // This method now requires a frame pointer.
   // TargetMachine *TM = JitContext->TM;
   // TM->Options.NoFramePointerElim = true;
 
-  // TODO: we must convey the offset of this local to the runtime
-  // via the GC encoding.
-  // https://github.com/dotnet/llilc/issues/766
-
   if (JitContext->Options->DoInsertStatepoints) {
     JitContext->GcInfo->GenericsContext = cast<AllocaInst>(ContextLocalAddress);
   }
+  else {
+    // Indicate that the context location's address escapes by inserting a call
+    // to llvm.frameescape. Put that call just after the last alloca or the
+    // store to the scratch local.
+    LLVMBuilder->SetInsertPoint(InsertPoint->getNextNode());
+    Value *FrameEscape = Intrinsic::getDeclaration(JitContext->CurrentModule,
+      Intrinsic::localescape);
+    Value *Args[] = { ContextLocalAddress };
+    const bool MayThrow = false;
+    makeCall(FrameEscape, MayThrow, Args);
+  }
+
+  // Don't move TempInsertionPoint up since what we added was not an alloca
+  LLVMBuilder->restoreIP(SavedInsertPoint);
 }
 
 void GenIR::insertIRForSecurityObject() {
@@ -694,16 +706,11 @@ void GenIR::insertIRForUnmanagedCallFrame() {
 //
 //===----------------------------------------------------------------------===//
 
-AllocaInst *GenIR::createAlloca(Type *T, Value *ArraySize, 
+AllocaInst *GenIR::createAlloca(Type *T, Value *ArraySize,
                                 const Twine &Name) {
   AllocaInst *AllocaInst = LLVMBuilder->CreateAlloca(T, ArraySize, Name);
-
+  
   if (GcInfo::isGcAggregate(T)) {
-    Value *FrameEscape = Intrinsic::getDeclaration(JitContext->CurrentModule,
-      Intrinsic::localescape);
-    Value *Args[] = { AllocaInst };
-    const bool MayThrow = false;
-    makeCall(FrameEscape, MayThrow, Args);
     JitContext->GcInfo->recordGcAggregate(AllocaInst);
   }
 
@@ -761,7 +768,7 @@ void GenIR::createSym(uint32_t Num, bool IsAuto, CorInfoType CorType,
   }
 
   AllocaInst *AllocaInst = createAlloca(LLVMType, nullptr,
-      UseNumber ? Twine(SymName) + Twine(Number) : Twine(SymName));
+    UseNumber ? Twine(SymName) + Twine(Number) : Twine(SymName));
 
   if (IsPinned && JitContext->Options->DoInsertStatepoints) {
     JitContext->GcInfo->recordPinnedSlot(AllocaInst);
@@ -988,7 +995,7 @@ Instruction *GenIR::createTemporary(Type *Ty, const Twine &Name) {
 
   AllocaInst *AllocaInst = createAlloca(Ty, nullptr, Name);
   // Update the end of the alloca range.
-  TempInsertionPoint = LLVMBuilder->GetInsertPoint();
+  TempInsertionPoint = AllocaInst;
   LLVMBuilder->restoreIP(IP);
 
   return AllocaInst;
@@ -3947,7 +3954,7 @@ IRNode *GenIR::loadField(CORINFO_RESOLVED_TOKEN *ResolvedToken, IRNode *Obj,
           // type.
           assert(VectorTypeToStructType.count(ObjType));
           IRNode *Pointer =
-              (IRNode *)createAlloca(Obj->getType(), nullptr);
+            (IRNode *)createAlloca(Obj->getType(), nullptr);
           LLVMBuilder->CreateStore(Obj, Pointer);
           Obj = (IRNode *)LLVMBuilder->CreateBitCast(
               Pointer,
