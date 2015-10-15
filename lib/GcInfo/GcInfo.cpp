@@ -480,8 +480,6 @@ void GcInfoEmitter::encodeLiveness(const Function &F) {
         break;
 
       case StackMapParserType::LocationKind::Direct: {
-        uint16_t DwReg = Loc.getDwarfRegNum();
-
         // __LLVM_Stackmap reports the liveness of pointers wrt SP even for
         // methods which have a FP. If this changes, we need to change
         // SlotMap from {Offset -> SlotID} mapping
@@ -489,7 +487,7 @@ void GcInfoEmitter::encodeLiveness(const Function &F) {
         //
         // All pinned/untracked pointers are already reported wrt SP base.
 
-        assert(DwReg == DW_STACK_POINTER &&
+        assert(Loc.getDwarfRegNum() == DW_STACK_POINTER &&
                "Expect Stack Pointer to be the base");
 
         GcSlotId SlotID;
