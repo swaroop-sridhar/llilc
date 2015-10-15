@@ -35,9 +35,9 @@ class GcFuncInfo {
 public:
   GcFuncInfo(const llvm::Function *F);
 
-  void recordPinnedSlot(llvm::AllocaInst* Alloca);
-  void recordGcAggregate(llvm::AllocaInst* Alloca);
-  void getEscapingLocations(llvm::SmallVector<llvm::Value*, 4> &EscapingLocs);
+  void recordPinnedSlot(llvm::AllocaInst *Alloca);
+  void recordGcAggregate(llvm::AllocaInst *Alloca);
+  void getEscapingLocations(llvm::SmallVector<llvm::Value *, 4> &EscapingLocs);
 
   const llvm::Function *Function;
   llvm::ValueMap<const llvm::AllocaInst *, int32_t> PinnedSlots;
@@ -67,15 +67,14 @@ public:
     return Type->isPointerTy() && !isGcPointer(Type);
   }
   static bool isGcFunction(const llvm::Function *F);
-  static void getGcPointers(llvm::StructType *StructTy, 
-                            const llvm::DataLayout &DataLayout, 
+  static void getGcPointers(llvm::StructType *StructTy,
+                            const llvm::DataLayout &DataLayout,
                             llvm::SmallVector<uint32_t, 4> &GcPtrOffsets);
 
-  GcFuncInfo * newGcInfo(const llvm::Function *F);
-  GcFuncInfo * getGcInfo(const llvm::Function *F);
+  GcFuncInfo *newGcInfo(const llvm::Function *F);
+  GcFuncInfo *getGcInfo(const llvm::Function *F);
 
   llvm::ValueMap<const llvm::Function *, GcFuncInfo *> GcInfoMap;
-
 };
 
 /// \brief This is the translator from LLVM's GC StackMaps
@@ -89,7 +88,7 @@ public:
   /// \param Allocator The allocator to be used by GcInfo encoder
   /// \param OffsetCorrection FunctionStart - CodeBlockStart difference
   GcInfoEmitter(LLILCJitContext *JitCtx, uint8_t *StackMapData,
-         GcInfoAllocator *Allocator, size_t OffsetCorrection);
+                GcInfoAllocator *Allocator, size_t OffsetCorrection);
 
   /// Emit GC Info to the EE using GcInfoEncoder.
   void emitGCInfo();
@@ -102,7 +101,8 @@ private:
   void encodeHeader(const llvm::Function &F);
   void encodeLiveness(const llvm::Function &F);
   void encodePinned(const llvm::Function &F, const GcFuncInfo &GcFuncInfo);
-  void encodeGcAggregates(const llvm::Function &F, const GcFuncInfo &GcFuncInfo);
+  void encodeGcAggregates(const llvm::Function &F,
+                          const GcFuncInfo &GcFuncInfo);
   void emitEncoding();
 
   bool shouldEmitGCInfo(const llvm::Function &F);
@@ -136,7 +136,6 @@ private:
   BYTE *CallSiteSizes;
 #endif // defined(PARTIALLY_INTERRUPTIBLE_GC_SUPPORTED)
 };
-
 
 class GcInfoRecorder : public llvm::MachineFunctionPass {
 public:

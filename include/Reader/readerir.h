@@ -781,7 +781,8 @@ public:
 
   IRNode *genNullCheck(IRNode *Node) override;
 
-  llvm::AllocaInst *createAlloca(llvm::Type *T, llvm::Value *ArraySize = nullptr, 
+  llvm::AllocaInst *createAlloca(llvm::Type *T,
+                                 llvm::Value *ArraySize = nullptr,
                                  const llvm::Twine &Name = "");
 
   void

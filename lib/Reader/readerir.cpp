@@ -465,12 +465,12 @@ void GenIR::readerPostVisit() {
 void GenIR::readerPostPass(bool IsImportOnly) {
 
   if (JitContext->Options->DoInsertStatepoints) {
-    SmallVector<Value*, 4> EscapingLocs;
+    SmallVector<Value *, 4> EscapingLocs;
     GcFuncInfo->getEscapingLocations(EscapingLocs);
 
     if (EscapingLocs.size() > 0) {
-      Value *FrameEscape = Intrinsic::getDeclaration(
-        JitContext->CurrentModule, Intrinsic::localescape);
+      Value *FrameEscape = Intrinsic::getDeclaration(JitContext->CurrentModule,
+                                                     Intrinsic::localescape);
 
       LLVMBuilder->SetInsertPoint(Function->begin()->end()->getPrevNode());
       LLVMBuilder->CreateCall(FrameEscape, EscapingLocs);
@@ -528,15 +528,14 @@ void GenIR::insertIRToKeepGenericContextAlive() {
 
   if (JitContext->Options->DoInsertStatepoints) {
     GcFuncInfo->GenericsContext = cast<AllocaInst>(ContextLocalAddress);
-  }
-  else {
+  } else {
     // Indicate that the context location's address escapes by inserting a call
     // to llvm.frameescape. Put that call just after the last alloca or the
     // store to the scratch local.
     LLVMBuilder->SetInsertPoint(InsertPoint->getNextNode());
     Value *FrameEscape = Intrinsic::getDeclaration(JitContext->CurrentModule,
-      Intrinsic::localescape);
-    Value *Args[] = { ContextLocalAddress };
+                                                   Intrinsic::localescape);
+    Value *Args[] = {ContextLocalAddress};
     const bool MayThrow = false;
     makeCall(FrameEscape, MayThrow, Args);
   }
@@ -698,10 +697,9 @@ void GenIR::insertIRForUnmanagedCallFrame() {
 //
 //===----------------------------------------------------------------------===//
 
-AllocaInst *GenIR::createAlloca(Type *T, Value *ArraySize,
-                                const Twine &Name) {
+AllocaInst *GenIR::createAlloca(Type *T, Value *ArraySize, const Twine &Name) {
   AllocaInst *AllocaInst = LLVMBuilder->CreateAlloca(T, ArraySize, Name);
-  
+
   if (GcInfo::isGcAggregate(T)) {
     GcFuncInfo->recordGcAggregate(AllocaInst);
   }
@@ -759,8 +757,9 @@ void GenIR::createSym(uint32_t Num, bool IsAuto, CorInfoType CorType,
     }
   }
 
-  AllocaInst *AllocaInst = createAlloca(LLVMType, nullptr,
-    UseNumber ? Twine(SymName) + Twine(Number) : Twine(SymName));
+  AllocaInst *AllocaInst =
+      createAlloca(LLVMType, nullptr,
+                   UseNumber ? Twine(SymName) + Twine(Number) : Twine(SymName));
 
   if (IsPinned && JitContext->Options->DoInsertStatepoints) {
     GcFuncInfo->recordPinnedSlot(AllocaInst);
@@ -2024,11 +2023,11 @@ Type *GenIR::getClassTypeWorker(
   // Since padding is explicit, this is an LLVM packed struct.
   StructTy->setBody(Fields, true /* isPacked */);
 
-  // For value classes we can do further checking and validate
-  // against the runtime's view of the class.
-  //
-  // Note the runtime only gives us size and gc info for value classes so
-  // we can't do this more generally.
+// For value classes we can do further checking and validate
+// against the runtime's view of the class.
+//
+// Note the runtime only gives us size and gc info for value classes so
+// we can't do this more generally.
 
 #ifndef NDEBUG
   if (HaveClassSize) {
@@ -2038,12 +2037,12 @@ Type *GenIR::getClassTypeWorker(
     const uint32_t PointerSize = DataLayout->getPointerSize();
 
     assert(((RuntimeGCInfo != nullptr) || (GcPtrOffsets.size() == 0)) &&
-      "Missing Runtime GC Layout for GC Struct");
+           "Missing Runtime GC Layout for GC Struct");
 
     for (uint32_t GcOffset : GcPtrOffsets) {
       assert((RuntimeGCInfo->GCPointers[GcOffset / PointerSize] !=
               CorInfoGCType::TYPE_GC_NONE) &&
-              "llvm type incorrectly describes location of gc references");
+             "llvm type incorrectly describes location of gc references");
     }
 
     free(RuntimeGCInfo);
@@ -3945,8 +3944,7 @@ IRNode *GenIR::loadField(CORINFO_RESOLVED_TOKEN *ResolvedToken, IRNode *Obj,
           // We haven't information abouth this field. Try to return struct
           // type.
           assert(VectorTypeToStructType.count(ObjType));
-          IRNode *Pointer =
-            (IRNode *)createAlloca(Obj->getType(), nullptr);
+          IRNode *Pointer = (IRNode *)createAlloca(Obj->getType(), nullptr);
           LLVMBuilder->CreateStore(Obj, Pointer);
           Obj = (IRNode *)LLVMBuilder->CreateBitCast(
               Pointer,
@@ -3991,7 +3989,7 @@ IRNode *GenIR::loadField(CORINFO_RESOLVED_TOKEN *ResolvedToken, IRNode *Obj,
   // Fields typed as GC pointers are always aligned,
   // so ignore any smaller alignment prefix
   if (FieldTy->isPointerTy() &&
-    GcInfo::isGcPointer(cast<PointerType>(FieldTy))) {
+      GcInfo::isGcPointer(cast<PointerType>(FieldTy))) {
     AlignmentPrefix = Reader_AlignNatural;
   }
 
@@ -4000,11 +3998,11 @@ IRNode *GenIR::loadField(CORINFO_RESOLVED_TOKEN *ResolvedToken, IRNode *Obj,
   // and do a load-indirect off it.
   if (FieldInfo.fieldAccessor == CORINFO_FIELD_INSTANCE_HELPER) {
     handleMemberAccess(FieldInfo.accessAllowed, FieldInfo.accessCalloutHelper);
-    
+
     IRNode *Destination;
     const bool IsLoad = true;
     IRNode *ValueToStore = nullptr;
-    
+
     if (FieldInfo.helper == CORINFO_HELP_GETFIELDSTRUCT) {
       Destination = (IRNode *)createTemporary(FieldTy);
       setValueRepresentsStruct(Destination);
@@ -4164,8 +4162,8 @@ void GenIR::storeField(CORINFO_RESOLVED_TOKEN *FieldToken, IRNode *ValueToStore,
     const bool IsLoad = false;
     IRNode *Destination = nullptr;
 
-    rdrCallFieldHelper(FieldToken, FieldInfo.helper, IsLoad, Destination, Object,
-                       ValueToStore, Alignment, IsVolatile);
+    rdrCallFieldHelper(FieldToken, FieldInfo.helper, IsLoad, Destination,
+                       Object, ValueToStore, Alignment, IsVolatile);
     return;
   }
 
@@ -6284,7 +6282,8 @@ bool GenIR::interlockedCmpXchg(IRNode *Destination, IRNode *Exchange,
                                IRNode *Comparand, IRNode **Result,
                                CorInfoIntrinsics IntrinsicID) {
   if (Exchange->getType()->isPointerTy()) {
-    Exchange = (IRNode *)LLVMBuilder->CreatePtrToInt(Exchange, Comparand->getType());
+    Exchange =
+        (IRNode *)LLVMBuilder->CreatePtrToInt(Exchange, Comparand->getType());
   }
 
   ASSERT(Exchange->getType() == Comparand->getType());
@@ -6344,8 +6343,8 @@ bool GenIR::interlockedIntrinsicBinOp(IRNode *Arg1, IRNode *Arg2,
   if (Op != AtomicRMWInst::BinOp::BAD_BINOP) {
     assert(Arg1->getType()->isPointerTy());
     Type *CastTy = GcInfo::isGcPointer(Arg1->getType())
-                     ? getManagedPointerType(Arg2->getType())
-                     : getUnmanagedPointerType(Arg2->getType());
+                       ? getManagedPointerType(Arg2->getType())
+                       : getUnmanagedPointerType(Arg2->getType());
     Arg1 = (IRNode *)LLVMBuilder->CreatePointerCast(Arg1, CastTy);
 
     Value *Result = LLVMBuilder->CreateAtomicRMW(
@@ -8039,8 +8038,7 @@ Type *GenIR::getStackMergeType(Type *Ty1, Type *Ty2, bool IsStruct1,
   PointerType *PointerTy1 = dyn_cast<PointerType>(Ty1);
   PointerType *PointerTy2 = dyn_cast<PointerType>(Ty2);
   if ((PointerTy1 != nullptr) && (PointerTy2 != nullptr) &&
-      (GcInfo::isGcPointer(PointerTy1)) &&
-      (GcInfo::isGcPointer(PointerTy2))) {
+      (GcInfo::isGcPointer(PointerTy1)) && (GcInfo::isGcPointer(PointerTy2))) {
 
     CORINFO_CLASS_HANDLE Class1 = nullptr;
     auto MapElement1 = ReverseClassTypeMap->find(PointerTy1);

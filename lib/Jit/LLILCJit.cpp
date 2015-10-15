@@ -375,7 +375,8 @@ CorJitResult LLILCJit::compileMethod(ICorJitInfo *JitInfo,
 
       assert(*NativeEntry >= MM.getHotCodeBlock());
       GcInfoAllocator GcInfoAllocator;
-      GcInfoEmitter GcInfoEmitter(&Context, MM.getStackMapSection(), &GcInfoAllocator,
+      GcInfoEmitter GcInfoEmitter(&Context, MM.getStackMapSection(),
+                                  &GcInfoAllocator,
                                   *NativeEntry - MM.getHotCodeBlock());
       GcInfoEmitter.emitGCInfo();
 
