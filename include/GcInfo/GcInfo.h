@@ -118,12 +118,12 @@ public:
   ~GcInfoEmitter();
 
 private:
-  void emitGCInfo(const llvm::Function &F, const GcFuncInfo &GcFuncInfo);
+  void emitGCInfo(const llvm::Function &F, const GcFuncInfo *GcFuncInfo);
   void encodeHeader(const llvm::Function &F);
   void encodeLiveness(const llvm::Function &F);
-  void encodePinned(const llvm::Function &F, const GcFuncInfo &GcFuncInfo);
+  void encodePinned(const llvm::Function &F, const GcFuncInfo *GcFuncInfo);
   void encodeGcAggregates(const llvm::Function &F,
-                          const GcFuncInfo &GcFuncInfo);
+                          const GcFuncInfo *GcFuncInfo);
   void emitEncoding();
 
   bool shouldEmitGCInfo(const llvm::Function &F);

@@ -574,7 +574,7 @@ void GcInfoEmitter::encodeLiveness(const Function &F) {
 }
 
 void GcInfoEmitter::encodePinned(const Function &F,
-                                 const GcFuncInfo &GcFuncInfo) {
+                                 const GcFuncInfo *GcFuncInfo) {
 
   const GcSlotFlags SlotFlags =
       (GcSlotFlags)(GC_SLOT_BASE | GC_SLOT_PINNED | GC_SLOT_UNTRACKED);
@@ -585,7 +585,7 @@ void GcInfoEmitter::encodePinned(const Function &F,
   }
 #endif // !NDEBUG
 
-  for (auto Pin : GcFuncInfo.PinnedSlots) {
+  for (auto Pin : GcFuncInfo->PinnedSlots) {
     int32_t Offset = Pin.second;
     assert(Offset != GcInfo::InvalidPointerOffset && "Pinned Slot Not Found!");
 
@@ -604,7 +604,7 @@ void GcInfoEmitter::encodePinned(const Function &F,
 }
 
 void GcInfoEmitter::encodeGcAggregates(const Function &F,
-                                       const GcFuncInfo &GcFuncInfo) {
+                                       const GcFuncInfo *GcFuncInfo) {
 #if !defined(NDEBUG)
   if (EmitLogs) {
     dbgs() << "  Untracked Slots:\n";
@@ -613,7 +613,7 @@ void GcInfoEmitter::encodeGcAggregates(const Function &F,
 
   const GcSlotFlags SlotFlags = (GcSlotFlags)(GC_SLOT_BASE | GC_SLOT_UNTRACKED);
 
-  for (auto Aggregate : GcFuncInfo.GcAggregates) {
+  for (auto Aggregate : GcFuncInfo->GcAggregates) {
     const AllocaInst *Alloca = Aggregate.first;
     Type *Type = Alloca->getAllocatedType();
     assert(isa<StructType>(Type) && "GcAggregate is not a struct");
@@ -672,13 +672,20 @@ GcInfoEmitter::~GcInfoEmitter() {
 }
 
 void GcInfoEmitter::emitGCInfo(const Function &F,
-                               const GcFuncInfo &GcFuncInfo) {
+                               const GcFuncInfo *GcFuncInfo) {
   encodeHeader(F);
-  // Pinned slots must be allocated before Live Slots
-  encodePinned(F, GcFuncInfo);
-  encodeLiveness(F);
-  // Aggregate slots should be allocated after Live Slots
-  encodeGcAggregates(F, GcFuncInfo);
+
+  if (JitContext->Options->DoInsertStatepoints) {
+    assert((GcFuncInfo != nullptr) && "GC Function missing GcInfo");
+
+
+    // Pinned slots must be allocated before Live Slots
+    encodePinned(F, GcFuncInfo);
+    encodeLiveness(F);
+    // Aggregate slots should be allocated after Live Slots
+    encodeGcAggregates(F, GcFuncInfo);
+  }
+
   emitEncoding();
 }
 
@@ -687,9 +694,7 @@ void GcInfoEmitter::emitGCInfo() {
 
   for (Function &F : *JitContext->CurrentModule) {
     if (shouldEmitGCInfo(F)) {
-      GcFuncInfo *GcFuncInfo = GcInfo->getGcInfo(&F);
-      assert(GcFuncInfo != nullptr && "GC Function missing GcInfo");
-      emitGCInfo(F, *GcFuncInfo);
+      emitGCInfo(F, GcInfo->getGcInfo(&F));
     }
   }
 }
