@@ -200,6 +200,7 @@ public:
         std::map<CORINFO_FIELD_HANDLE, uint32_t> *FieldIndexMap)
       : ReaderBase(JitContext->JitInfo, JitContext->MethodInfo,
                    JitContext->Flags),
+        LastEscapingLocalAllocation(nullptr),
         UnmanagedCallFrame(nullptr), ThreadPointer(nullptr),
         BuiltinObjectType(nullptr), ElementToArrayTypeMap() {
     this->JitContext = JitContext;
@@ -1768,6 +1769,13 @@ private:
   bool DoneBuildingFlowGraph;
   llvm::BasicBlock *EntryBlock;
   llvm::Instruction *TempInsertionPoint;
+  llvm::Instruction *LastEscapingLocalAllocation; ///< Position of the last stack 
+                                                  ///< allocation that must be 
+                                                  ///< frame-escaped. LLVM requires 
+                                                  ///< that every function have at most
+                                                  ///< one localescape intrinsic. So, we 
+                                                  ///< all escaping allocations and 
+                                                  ///< insert after the last alloca.
   IRNode *MethodSyncHandle; ///< If the method is synchronized, this is
                             ///< the handle used for entering and exiting
                             ///< the monitor.
