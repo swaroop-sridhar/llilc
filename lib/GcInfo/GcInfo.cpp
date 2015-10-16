@@ -352,10 +352,6 @@ void GcInfoEmitter::encodeHeader(const Function &F) {
 }
 
 void GcInfoEmitter::encodeLiveness(const Function &F) {
-  if (LLVMStackMapData == nullptr) {
-    return;
-  }
-
   ArrayRef<uint8_t> StackMapContentsArray(LLVMStackMapData,
                                           JitContext->StackMapSize);
 
@@ -655,6 +651,9 @@ void GcInfoEmitter::finalizeEncoding() {
 
 #if defined(PARTIALLY_INTERRUPTIBLE_GC_SUPPORTED)
   // Encode Call-sites
+  assert(CallSiteSizes != nullptr);
+  assert(CallSites != nullptr);
+  assert(NumCallSites > 0);
   Encoder.DefineCallSites(CallSites, CallSiteSizes, NumCallSites);
 #endif // defined(PARTIALLY_INTERRUPTIBLE_GC_SUPPORTED)
 }
@@ -676,15 +675,21 @@ void GcInfoEmitter::emitGCInfo(const Function &F,
   encodeHeader(F);
 
   if (JitContext->Options->DoInsertStatepoints) {
-    assert((GcFuncInfo != nullptr) && "GC Function missing GcInfo");
-    // Pinned slots must be allocated before Live Slots
-    encodePinned(F, GcFuncInfo);
-    // Assign Slots for Tracked pointers and report their liveness
-    encodeLiveness(F);
-    // Aggregate slots should be allocated after Live Slots
-    encodeGcAggregates(F, GcFuncInfo);
-    // Finalization must be done after all encodings
-    finalizeEncoding();
+    if (LLVMStackMapData != nullptr) {
+      assert((GcFuncInfo != nullptr) && "GC Function missing GcInfo");
+      // Pinned slots must be allocated before Live Slots
+      encodePinned(F, GcFuncInfo);
+      // Assign Slots for Tracked pointers and report their liveness
+      encodeLiveness(F);
+      // Aggregate slots should be allocated after Live Slots
+      encodeGcAggregates(F, GcFuncInfo);
+      // Finalization must be done after all encodings
+      finalizeEncoding();
+    }
+    else {
+      // No need to report any pointers if there are no
+      // Call-sites (and therefore no StackMap).
+    }
   }
 
   emitEncoding();

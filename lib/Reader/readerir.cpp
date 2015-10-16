@@ -464,12 +464,7 @@ void GenIR::readerPostVisit() {
 
 void GenIR::readerPostPass(bool IsImportOnly) {
 
-  if (LastEscapingLocalAllocation != nullptr) {
-    // LocalEscape and all allocations are expected in 
-    // the prolog block.
-    assert(LastEscapingLocalAllocation->getParent() == Function->begin());
-    assert(JitContext->Options->DoInsertStatepoints);
-
+  if(JitContext->Options->DoInsertStatepoints){
     SmallVector<Value*, 4> EscapingLocs;
     GcFuncInfo->getEscapingLocations(EscapingLocs);
 
@@ -477,7 +472,11 @@ void GenIR::readerPostPass(bool IsImportOnly) {
       Value *FrameEscape = Intrinsic::getDeclaration(
         JitContext->CurrentModule, Intrinsic::localescape);
 
-      LLVMBuilder->SetInsertPoint(LastEscapingLocalAllocation->getNextNode());
+      // Insert the LocalEscape Intrinsic at the end of the 
+      // Prolog block, after all local allocations, 
+      // before the basic-block Terminator
+      Instruction *InsertionPoint = Function->begin()->getTerminator();
+      LLVMBuilder->SetInsertPoint(InsertionPoint);
       LLVMBuilder->CreateCall(FrameEscape, EscapingLocs);
     }
   }
@@ -534,7 +533,6 @@ void GenIR::insertIRToKeepGenericContextAlive() {
   if (JitContext->Options->DoInsertStatepoints) {
     AllocaInst *Alloca = cast<AllocaInst>(ContextLocalAddress);
     GcFuncInfo->GenericsContext = Alloca;
-    LastEscapingLocalAllocation = Alloca;
   }
   else {
     // Indicate that the context location's address escapes by inserting a call
@@ -584,7 +582,6 @@ void GenIR::insertIRForSecurityObject() {
   if (JitContext->Options->DoInsertStatepoints) {
     AllocaInst *Alloca = cast<AllocaInst>(SecurityObjectAddress);
     GcFuncInfo->SecurityObject = Alloca;
-    LastEscapingLocalAllocation = Alloca;
   }
 }
 
@@ -713,7 +710,6 @@ AllocaInst *GenIR::createAlloca(Type *T, Value *ArraySize,
   
   if (GcInfo::isGcAggregate(T)) {
     GcFuncInfo->recordGcAggregate(AllocaInst);
-    LastEscapingLocalAllocation = AllocaInst;
   }
 
   return AllocaInst;
@@ -774,7 +770,6 @@ void GenIR::createSym(uint32_t Num, bool IsAuto, CorInfoType CorType,
 
   if (IsPinned && JitContext->Options->DoInsertStatepoints) {
     GcFuncInfo->recordPinnedSlot(AllocaInst);
-    LastEscapingLocalAllocation = AllocaInst;
   }
 
   DIFile *Unit = DBuilder->createFile(LLILCDebugInfo.TheCU->getFilename(),
