@@ -233,10 +233,7 @@ EndProject
     # Now initialized based on desired values and options.
     env["complus_altjit"]="*"
     env["complus_altjitname"]=jit_name
-    if (args.precise_gc):
-        env["complus_insertstatepoints"]="1"
-    else:
-        env["complus_gcconservative"]="1"
+    env["complus_insertstatepoints"]="1"
     if not args.ngen:
         env["complus_zapdisable"]="1"
     if args.dump_level:
