@@ -193,12 +193,7 @@ def main(argv):
             test_env.write('set COMPlus_AltJit=*\n')
             test_env.write('set COMPlus_AltJitNgen=*\n')
             test_env.write('set COMPlus_AltJitName=' + time_stamped_jit_name + '\n')
-            if (args.precise_gc):
-                test_env.write('set COMPlus_InsertStatepoints=1\n')
-            else:
-                test_env.write('set COMPlus_GCConservative=1\n')
-            if (args.insert_statepoints):
-                test_env.write('set COMPlus_InsertStatepoints=1\n')
+            test_env.write('set COMPlus_InsertStatepoints=1\n')
             if (not args.ngen):
               test_env.write('set COMPlus_ZapDisable=1\n')
             test_env.write('chcp 65001\n')

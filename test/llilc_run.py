@@ -151,10 +151,7 @@ def main(argv):
     os.environ["COMPlus_AltJit"]="*"
     os.environ["COMPlus_AltJitNgen"]="*"
     os.environ["COMPlus_AltJitName"]=jit_name
-    if (args.precise_gc):
-        os.environ["COMPlus_InsertStatepoints"]="1"
-    else:
-        os.environ["COMPlus_GCConservative"]="1"
+    os.environ["COMPlus_InsertStatepoints"]="1"
     if not args.ngen:
         os.environ["COMPlus_ZapDisable"]="1"
     if args.dump_level:
@@ -185,10 +182,15 @@ def main(argv):
                 arg = os.path.join(args.coreclr_runtime_path, arg)
                 first_corerun = False
             command.append(arg)
-        
+            
     command.append(args.app_path)
     for arg in unknown:
         command.append(arg)
+        
+    print("\n\n\nNow running ... \n")
+    print(command)    
+    print("\n---\n\n\n")
+        
     error_level = RunCommand(command)
     if llilcverbose:
         log ('Exiting llilc_run.py with exit code ', error_level)
