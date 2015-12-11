@@ -159,7 +159,7 @@ size_t Disasm::disasmInstruction(size_t Address, const uint8_t *Bytes,
 
 // Allocate and initialize a Disassembler object.
 // Returns the disassembler on success, nullptr on failure.
-extern "C" Disasm *InitDisasm(string TargetTriple) {
+extern "C" Disasm *InitDisasm(const char* TargetTriple) {
   Disasm *Disassembler = new Disasm(TargetTriple);
   if (Disassembler->init()) {
     return Disassembler;
